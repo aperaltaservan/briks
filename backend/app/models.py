@@ -261,6 +261,45 @@ class Placement(Base):
 
 
 # --------------------------------------------------------------------------
+# OAuth del servidor MCP
+# --------------------------------------------------------------------------
+# Clientes como ChatGPT no admiten un token fijo: se registran solos y piden
+# un token siguiendo el flujo de autorización de MCP. Aquí sólo se guarda el
+# estado; el protocolo lo pone el SDK (ver services -> app/oauth.py).
+class OAuthClient(Base):
+    __tablename__ = "oauth_clients"
+
+    client_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # OAuthClientInformationFull serializado: el SDK define los campos y no
+    # tiene sentido duplicar su esquema aquí.
+    data: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class OAuthCode(Base):
+    """Código de autorización: de un solo uso y con minutos de vida."""
+
+    __tablename__ = "oauth_codes"
+
+    code: Mapped[str] = mapped_column(String(128), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(64), index=True)
+    data: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
+class OAuthTokenRow(Base):
+    __tablename__ = "oauth_tokens"
+
+    token: Mapped[str] = mapped_column(String(128), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # access | refresh
+    client_id: Mapped[str] = mapped_column(String(64), index=True)
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    resource: Mapped[str | None] = mapped_column(String(400))
+    expires_at: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# --------------------------------------------------------------------------
 # Reconocimiento (foto o descripción libre desde el chat)
 # --------------------------------------------------------------------------
 class RecognitionSession(Base):

@@ -68,10 +68,17 @@ O directamente `arrancar.bat` desde la raíz.
 ## Acceso
 
 La app entera vive detrás de un login (usuario único, sin registro): al
-entrar sin sesión, cualquier ruta redirige a `/login`. El servidor MCP en
-`/mcp` es aparte -- lo usan clientes como Claude Code, que no pueden hacer un
-login interactivo -- y se protege con un token fijo si se configura
-`LEGO_MCP_TOKEN` (sin él, `/mcp` queda abierto, como hasta ahora).
+entrar sin sesión, cualquier ruta redirige a `/login`. El servidor MCP en `/mcp` es aparte, porque lo usan clientes que no pueden
+hacer un login interactivo, y admite dos formas de autenticarse:
+
+- **Token fijo**: `Authorization: Bearer <LEGO_MCP_TOKEN>`. Es lo más simple
+  y le vale a Claude Code. Sin `LEGO_MCP_TOKEN`, `/mcp` queda abierto.
+- **OAuth 2.1** (el flujo del propio protocolo MCP): el cliente descubre los
+  metadatos, se registra solo, manda al usuario a una pantalla de permiso
+  --que reutiliza el login-- y recibe un token. Es lo que necesitan los
+  conectores de ChatGPT, que no dejan fijar la cabecera a mano. Se activa
+  definiendo `LEGO_PUBLIC_URL`. El protocolo lo implementa el SDK de MCP;
+  `app/oauth.py` sólo aporta el proveedor y la pantalla de consentimiento.
 
 Variables de entorno relevantes (ver `.env.example`):
 
@@ -81,6 +88,7 @@ Variables de entorno relevantes (ver `.env.example`):
 | `LEGO_ADMIN_PASSWORD` | Contraseña del login |
 | `LEGO_SESSION_SECRET` | Firma la cookie de sesión; un valor aleatorio largo |
 | `LEGO_MCP_TOKEN` | Opcional: exige `Authorization: Bearer <token>` en `/mcp` |
+| `LEGO_PUBLIC_URL` | URL pública (p. ej. `https://briks.peraltalberto.com`); activa OAuth |
 | `LEGO_COOKIE_SECURE` | `true` en producción (HTTPS); `false` en local |
 
 ## Despliegue (Docker / Dokploy)

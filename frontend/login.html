@@ -46,7 +46,11 @@
         return;
       }
       if (resp.ok) {
-        window.location.href = "/";
+        // Si veníamos de una pantalla concreta (p. ej. autorizar un
+        // conector), se vuelve allí; sólo rutas propias, nunca a otro sitio.
+        const pedido = new URLSearchParams(location.search).get("siguiente") || "";
+        const destino = pedido.startsWith("/") && !pedido.startsWith("//") ? pedido : "/";
+        window.location.href = destino;
       } else {
         errorEl.textContent = "Usuario o contraseña incorrectos.";
         errorEl.style.display = "block";

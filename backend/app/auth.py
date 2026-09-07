@@ -8,20 +8,20 @@ from __future__ import annotations
 
 import secrets
 
-import logging
-
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .config import settings
-
-logger = logging.getLogger("lego.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # Alcanzables sin sesión: la página de login, el endpoint que la procesa y el
 # healthcheck que usa Dokploy para saber si el contenedor sigue vivo.
 RUTAS_PUBLICAS = {"/login", "/api/auth/login", "/salud"}
+# El flujo OAuth lo recorre un cliente que todavía no tiene sesión: descubre
+# metadatos, se registra y pide el token. La pantalla de consentimiento sí
+# exige sesión, pero lo comprueba ella misma para poder volver tras el login.
+PREFIJOS_OAUTH = ("/.well-known/", "/authorize", "/token", "/register", "/revoke", "/oauth/")
 # El JS/CSS del frontend no contiene datos privados; servirlo en claro evita
 # tener que duplicar login.html con sus propios estilos embebidos.
 PREFIJOS_PUBLICOS = ("/static/",)
@@ -62,10 +62,14 @@ async def me(request: Request) -> dict:
 
 
 def ruta_publica(path: str) -> bool:
-    return path in RUTAS_PUBLICAS or path.startswith(PREFIJOS_PUBLICOS)
+    return (
+        path in RUTAS_PUBLICAS
+        or path.startswith(PREFIJOS_PUBLICOS)
+        or path.startswith(PREFIJOS_OAUTH)
+    )
 
 
-def mcp_autorizado(request: Request) -> bool:
+async def mcp_autorizado(request: Request) -> bool:
     """Sin token configurado, /mcp queda abierto -- igual que en local hoy.
 
     Sólo por cabecera Authorization: un token en la URL queda en logs,
@@ -76,13 +80,12 @@ def mcp_autorizado(request: Request) -> bool:
     if not settings.mcp_token:
         return True
     cabecera = request.headers.get("authorization", "")
-    ok = secrets.compare_digest(cabecera, f"Bearer {settings.mcp_token}")
-    if not ok:
-        # Diagnóstico temporal: qué llega realmente en Authorization, sin
-        # volcar el token completo al log. Se quita en cuanto se resuelva.
-        if cabecera:
-            pista = f"{cabecera[:12]}...{cabecera[-4:]} (len={len(cabecera)})"
-        else:
-            pista = "(sin cabecera Authorization)"
-        logger.warning("MCP no autorizado: Authorization recibida = %s", pista)
-    return ok
+    if secrets.compare_digest(cabecera, f"Bearer {settings.mcp_token}"):
+        return True
+    # Si no es el token fijo, puede ser uno emitido por OAuth a un cliente
+    # que pasó por la pantalla de autorización (ChatGPT y similares).
+    if cabecera.startswith("Bearer "):
+        from .oauth import token_oauth_valido
+
+        return await token_oauth_valido(cabecera[7:])
+    return False

@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     # Token para /mcp (opcional): sin él, /mcp queda abierto como hoy en local.
     mcp_token: str | None = None
+    # URL pública con la que se llega a la app desde fuera. Hace falta para
+    # OAuth: los metadatos que publica el servidor tienen que llevar URLs
+    # absolutas y la app, detrás del proxy, no puede adivinarlas. Sin esto,
+    # OAuth queda desactivado y sólo vale el token fijo.
+    public_url: str | None = None
 
     @property
     def database_url(self) -> str:

@@ -13,6 +13,7 @@ services:
       LEGO_SESSION_SECRET: ${LEGO_SESSION_SECRET:?define LEGO_SESSION_SECRET}
       LEGO_MCP_TOKEN: ${LEGO_MCP_TOKEN:-}
       LEGO_COOKIE_SECURE: ${LEGO_COOKIE_SECURE:-false}
+      LEGO_PUBLIC_URL: ${LEGO_PUBLIC_URL:-}
     volumes:
       - lego-data:/app/data
     restart: unless-stopped
