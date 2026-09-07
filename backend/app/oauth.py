@@ -16,6 +16,7 @@ clientes que sí admiten cabecera (Claude Code), así que conviven los dos.
 """
 from __future__ import annotations
 
+import html
 import json
 import secrets
 import time
@@ -247,7 +248,12 @@ def _leer_peticion(peticion: str) -> dict:
         raise HTTPException(status_code=400, detail="Petición de autorización no válida.")
 
 
-def _pagina(nombre_cliente: str, peticion: str) -> str:
+def _pagina(nombre_cliente: str, peticion: str, csrf: str) -> str:
+    # El nombre del cliente lo pone quien se registra, y el registro es
+    # abierto: sin escapar, cualquiera podría colar HTML en esta pantalla.
+    nombre_cliente = html.escape(nombre_cliente)
+    peticion = html.escape(peticion, quote=True)
+    csrf = html.escape(csrf, quote=True)
     return f"""<!doctype html>
 <html lang="es">
 <head>
@@ -272,6 +278,7 @@ def _pagina(nombre_cliente: str, peticion: str) -> str:
     <p class="pista">Podrás revocarlo más adelante borrando el conector en esa aplicación.</p>
     <form method="post" action="/oauth/autorizar">
       <input type="hidden" name="peticion" value="{peticion}" />
+      <input type="hidden" name="csrf" value="{csrf}" />
       <div class="fila">
         <button type="submit" name="decision" value="no" class="pequeno" style="flex:1;">Cancelar</button>
         <button type="submit" name="decision" value="si" class="primario" style="flex:2;">Autorizar</button>
@@ -290,9 +297,14 @@ async def pantalla_autorizar(request: Request, peticion: str):
         vuelta = quote(f"/oauth/autorizar?peticion={quote(peticion, safe='')}", safe="")
         return RedirectResponse(f"/login?siguiente={vuelta}", status_code=303)
 
+    # Testigo anti-CSRF ligado a la sesión: sin él, bastaría con que alguien
+    # llevara al usuario a enviar este formulario para autorizar su cliente.
+    csrf = secrets.token_urlsafe(32)
+    request.session["csrf_oauth"] = csrf
+
     cliente = await proveedor.get_client(datos["client_id"])
     nombre = (cliente.client_name if cliente else None) or datos["client_id"]
-    return HTMLResponse(_pagina(nombre, peticion))
+    return HTMLResponse(_pagina(nombre, peticion, csrf))
 
 
 @router.post("/autorizar", include_in_schema=False)
@@ -300,10 +312,15 @@ async def conceder(
     request: Request,
     peticion: str = Form(...),
     decision: str = Form("no"),
+    csrf: str = Form(""),
 ) -> RedirectResponse:
     datos = _leer_peticion(peticion)
     if not request.session.get("autenticado"):
         raise HTTPException(status_code=401, detail="Sesión caducada, vuelve a entrar.")
+
+    esperado = request.session.pop("csrf_oauth", "")
+    if not esperado or not secrets.compare_digest(csrf, esperado):
+        raise HTTPException(status_code=400, detail="Petición no válida, vuelve a intentarlo.")
 
     destino = datos["redirect_uri"]
     parametros: dict[str, str] = {}

@@ -49,7 +49,10 @@
         // Si veníamos de una pantalla concreta (p. ej. autorizar un
         // conector), se vuelve allí; sólo rutas propias, nunca a otro sitio.
         const pedido = new URLSearchParams(location.search).get("siguiente") || "";
-        const destino = pedido.startsWith("/") && !pedido.startsWith("//") ? pedido : "/";
+        // Sólo rutas propias. Ojo con la barra invertida: los navegadores
+        // normalizan "/\otro.com" a "//otro.com", que ya es otro sitio.
+        const propio = pedido.startsWith("/") && !/^\/[/\\]/.test(pedido);
+        const destino = propio ? pedido : "/";
         window.location.href = destino;
       } else {
         errorEl.textContent = "Usuario o contraseña incorrectos.";
