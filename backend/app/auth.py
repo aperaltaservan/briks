@@ -60,7 +60,16 @@ def ruta_publica(path: str) -> bool:
 
 
 def mcp_autorizado(request: Request) -> bool:
-    """Sin token configurado, /mcp queda abierto -- igual que en local hoy."""
+    """Sin token configurado, /mcp queda abierto -- igual que en local hoy.
+
+    Algunos clientes (ChatGPT) no dejan configurar la cabecera Authorization
+    tal cual en sus conectores, así que el token también se acepta como
+    parámetro de la URL (?token=...): cualquier formulario admite pegarlo ahí
+    aunque no tenga un campo específico para cabeceras.
+    """
     if not settings.mcp_token:
         return True
-    return request.headers.get("authorization", "") == f"Bearer {settings.mcp_token}"
+    cabecera = request.headers.get("authorization", "")
+    if cabecera == f"Bearer {settings.mcp_token}":
+        return True
+    return request.query_params.get("token") == settings.mcp_token

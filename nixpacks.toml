@@ -1,0 +1,12 @@
+# Config de Nixpacks para Dokploy. El código Python no está en la raíz del
+# repo (vive en backend/), así que se indica todo a mano en vez de fiarse
+# de la detección automática.
+providers = ["python"]
+
+[phases.install]
+cmds = ["pip install -r backend/requirements.txt"]
+
+[start]
+# Igual que docker-entrypoint.sh: siembra el catálogo (sin inventario) sólo
+# si es el primer arranque, y luego levanta el servidor.
+cmd = "cd backend && ([ -f ../data/lego.db ] || python -m scripts.seed --solo-catalogo) && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
