@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inventario LEGO · Acceso</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🧱</text></svg>" />
+</head>
+<body style="display:flex; align-items:center; justify-content:center; min-height:100vh;">
+  <form id="form-login" class="panel" style="width:min(340px, 90vw);">
+    <div class="marca" style="margin-bottom:14px;">
+      <span class="ladrillo" aria-hidden="true"></span>
+      <div>
+        <h1 style="margin:0; font-size:17px;">Inventario LEGO</h1>
+        <p class="sub" style="margin:0;">Acceso privado</p>
+      </div>
+    </div>
+    <div class="fila" style="flex-direction:column; margin-top:0;">
+      <input id="usuario" name="usuario" placeholder="Usuario" autocomplete="username" required autofocus />
+      <input id="contrasena" name="contrasena" type="password" placeholder="Contraseña" autocomplete="current-password" required />
+    </div>
+    <p id="error-login" style="color:#ff8080; font-size:13px; display:none; margin:10px 0 0;"></p>
+    <div class="fila">
+      <button type="submit" class="primario" style="flex:1;">Entrar</button>
+    </div>
+  </form>
+  <script>
+    const form = document.getElementById("form-login");
+    const errorEl = document.getElementById("error-login");
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      errorEl.style.display = "none";
+      const usuario = document.getElementById("usuario").value;
+      const contrasena = document.getElementById("contrasena").value;
+      let resp;
+      try {
+        resp = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ usuario, contrasena }),
+        });
+      } catch {
+        errorEl.textContent = "No se pudo contactar con el servidor.";
+        errorEl.style.display = "block";
+        return;
+      }
+      if (resp.ok) {
+        window.location.href = "/";
+      } else {
+        errorEl.textContent = "Usuario o contraseña incorrectos.";
+        errorEl.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>

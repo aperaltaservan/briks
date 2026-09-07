@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inventario LEGO</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🧱</text></svg>" />
+</head>
+<body>
+  <header class="cabecera">
+    <div class="marca">
+      <span class="ladrillo" aria-hidden="true"></span>
+      <div>
+        <h1>Inventario LEGO</h1>
+        <p class="sub">Piezas, sets y montajes · motor MCP</p>
+      </div>
+    </div>
+    <nav class="pestanas" id="nav">
+      <button data-vista="resumen" class="activa">Resumen</button>
+      <button data-vista="inventario">Inventario</button>
+      <button data-vista="sets">Sets</button>
+      <button data-vista="montajes">Montajes</button>
+      <button data-vista="disenador">Diseñador 3D</button>
+      <button data-vista="fotos">Fotos</button>
+      <button data-vista="mcp">MCP</button>
+    </nav>
+    <button id="salir" class="pequeno" title="Cerrar sesión">Salir</button>
+  </header>
+
+  <main id="contenido">
+    <!-- RESUMEN -->
+    <section class="vista activa" id="vista-resumen">
+      <div class="cifras" id="cifras"></div>
+      <div class="rejilla-2">
+        <div class="panel">
+          <h2>Por color</h2>
+          <div id="por-color" class="barras"></div>
+        </div>
+        <div class="panel">
+          <h2>Por categoría</h2>
+          <div id="por-categoria" class="barras"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>¿Qué puedo montar ahora?</h2>
+        <div id="montables"></div>
+      </div>
+    </section>
+
+    <!-- INVENTARIO -->
+    <section class="vista" id="vista-inventario">
+      <div class="panel">
+        <div class="filtros">
+          <input id="inv-q" type="search" placeholder="Buscar: placa 2x4, loseta 1x1, ladrillo…" />
+          <input id="inv-color" type="text" placeholder="Color (rojo, beige…)" />
+          <input id="inv-ubi" type="text" placeholder="Ubicación" />
+          <label class="check"><input type="checkbox" id="inv-disp" /> Sólo disponibles</label>
+          <button id="inv-buscar" class="primario">Buscar</button>
+        </div>
+        <p class="pista">Puedes escribir en español: se traduce a la nomenclatura oficial LEGO.</p>
+      </div>
+      <div id="inv-resultado" class="rejilla-piezas"></div>
+    </section>
+
+    <!-- SETS -->
+    <section class="vista" id="vista-sets">
+      <div class="panel">
+        <h2>Importar un set</h2>
+        <p class="pista">
+          Pega el CSV de LEGO.com (columnas <code>SetNumber, ElementID, Qty, Colour,
+          Category, DesignID, ElementName, ImageURL</code>) o arrastra el fichero aquí.
+          Importar registra de qué se compone el set; <strong>no</strong> suma piezas al
+          inventario hasta que pulses «Inventariar».
+        </p>
+        <div id="zona-csv" class="zona-soltar">Arrastra aquí el CSV o pégalo abajo</div>
+        <textarea id="csv-texto" rows="4" placeholder="SetNumber,ElementID,Qty,Colour,…"></textarea>
+        <div class="fila">
+          <input id="csv-numero" placeholder="Nº de set (opcional)" />
+          <input id="csv-nombre" placeholder="Nombre del set (opcional)" />
+          <button id="csv-importar" class="primario">Importar</button>
+        </div>
+      </div>
+      <div id="sets-lista"></div>
+    </section>
+
+    <!-- MONTAJES -->
+    <section class="vista" id="vista-montajes">
+      <div class="panel">
+        <div class="fila">
+          <input id="mont-nombre" placeholder="Nombre del montaje" />
+          <input id="mont-desc" placeholder="Descripción (opcional)" />
+          <button id="mont-crear" class="primario">Crear montaje</button>
+        </div>
+      </div>
+      <div class="rejilla-2">
+        <div id="montajes-lista"></div>
+        <div id="montaje-detalle" class="panel vacio">Selecciona un montaje para ver sus pasos.</div>
+      </div>
+    </section>
+
+    <!-- DISEÑADOR 3D -->
+    <section class="vista" id="vista-disenador">
+      <div class="barra-disenador">
+        <select id="dis-montaje" title="Montaje que se está diseñando"></select>
+        <div class="conmutador" id="dis-modo">
+          <button data-modo="disenar" class="activa">Diseñar</button>
+          <button data-modo="instrucciones">Instrucciones</button>
+        </div>
+        <span class="separador"></span>
+        <button id="dis-rotar" class="pequeno" title="Girar la pieza en mano (R)">⟳ Girar <span id="dis-rotacion">0°</span></button>
+        <button id="dis-soltar" class="pequeno" title="Soltar la pieza en mano (Esc)">Soltar pieza</button>
+        <button id="dis-borrar" class="pequeno peligro" title="Quitar la pieza seleccionada (Supr)">Quitar selección</button>
+        <span class="separador"></span>
+        <label class="check" title="Tamaño de la placa base, en studs">
+          Placa
+          <input id="dis-placa-w" type="number" min="8" max="96" step="8" value="32" />
+          ×
+          <input id="dis-placa-d" type="number" min="8" max="96" step="8" value="32" />
+        </label>
+        <button id="dis-recentrar" class="pequeno">Recentrar vista</button>
+        <span class="crecer"></span>
+        <span class="pista" id="dis-estado"></span>
+      </div>
+
+      <div class="disenador">
+        <aside class="panel columna-paleta">
+          <h2>Piezas disponibles</h2>
+          <input id="dis-buscar" type="search" placeholder="Filtrar: placa, ladrillo, rojo…" />
+          <p class="pista">Elige una pieza y haz clic en la placa para colocarla. Sólo aparece lo que tienes libre.</p>
+          <div id="dis-paleta" class="paleta"></div>
+        </aside>
+
+        <div class="lienzo-envoltorio">
+          <canvas id="dis-lienzo"></canvas>
+          <div class="ayuda-teclas">
+            Arrastrar con el botón derecho: girar la vista · Rueda: zoom ·
+            Mayús + arrastrar: desplazar · <kbd>R</kbd> girar pieza · <kbd>+</kbd>/<kbd>−</kbd> subir o bajar ·
+            <kbd>Supr</kbd> quitar · <kbd>Esc</kbd> soltar
+          </div>
+          <div id="dis-cargando" class="capa-cargando oculto">Cargando modelo…</div>
+        </div>
+
+        <aside class="panel columna-pasos">
+          <div id="dis-panel-disenar">
+            <h2>Pasos del montaje</h2>
+            <p class="pista">Las piezas que coloques entran en el paso activo. Así se generan las instrucciones.</p>
+            <div id="dis-pasos" class="lista-pasos"></div>
+            <div class="fila">
+              <input id="dis-paso-titulo" placeholder="Título del paso nuevo" />
+              <button id="dis-nuevo-paso" class="primario pequeno">Añadir</button>
+            </div>
+            <div id="dis-seleccion" class="seleccion vacio">Ninguna pieza seleccionada.</div>
+          </div>
+
+          <div id="dis-panel-instrucciones" class="oculto">
+            <div class="navegacion-pasos">
+              <button id="ins-anterior" class="pequeno">‹</button>
+              <span id="ins-indicador">Paso 0 de 0</span>
+              <button id="ins-siguiente" class="pequeno">›</button>
+            </div>
+            <div id="ins-detalle"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- FOTOS -->
+    <section class="vista" id="vista-fotos">
+      <div class="panel">
+        <h2>Inventariado por foto</h2>
+        <p class="pista">
+          El reconocimiento visual lo hace el modelo del chat: le enseñas la foto, él
+          describe las piezas y llama a <code>registrar_piezas_detectadas</code>. Aquí se
+          revisan esos lotes antes de que sumen al inventario.
+        </p>
+      </div>
+      <div id="fotos-lista"></div>
+    </section>
+
+    <!-- MCP -->
+    <section class="vista" id="vista-mcp">
+      <div class="panel">
+        <h2>Conectar el chat a este inventario</h2>
+        <p class="pista">El servidor MCP es el motor de la app: expone las mismas operaciones que ves aquí.</p>
+        <h3>Claude Code (HTTP)</h3>
+        <pre><code id="cmd-http"></code></pre>
+        <h3>Claude Desktop (stdio)</h3>
+        <pre><code id="cmd-stdio"></code></pre>
+      </div>
+      <div class="panel">
+        <h2>Herramientas disponibles</h2>
+        <div id="mcp-tools" class="etiquetas"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="aviso" class="aviso oculto"></div>
+
+  <!-- Diálogo de confirmación: se usa cuando la API responde 409 -->
+  <div id="dialogo" class="dialogo oculto">
+    <div class="dialogo-caja">
+      <h2 id="dialogo-titulo">¿Seguro?</h2>
+      <p id="dialogo-texto"></p>
+      <div id="dialogo-detalle" class="detalle"></div>
+      <div class="fila derecha">
+        <button id="dialogo-cancelar" class="pequeno">Cancelar</button>
+        <button id="dialogo-aceptar" class="primario pequeno">Sí, continuar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script type="module" src="/static/designer.js"></script>
+</body>
+</html>

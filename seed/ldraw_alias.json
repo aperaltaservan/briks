@@ -1,0 +1,18 @@
+{
+  "_comentario": [
+    "Moldes cuyo DesignID de LEGO no coincide con el número que usa LDraw.",
+    "Sin esta tabla la pieza se dibuja como la caja que ocupa, que es correcto",
+    "pero pobre. 'nombre_ldraw' es la descripción con la que se verificó la",
+    "equivalencia: si no se parece a la pieza, el alias está mal.",
+    "Para añadir uno: busca el .dat en la biblioteca, comprueba su primera",
+    "línea y anótala aquí."
+  ],
+  "21462": { "ldraw": "30374", "nombre_ldraw": "Bar 4L Lightsaber Blade" },
+  "28626": { "ldraw": "85861", "nombre_ldraw": "Plate 1 x 1 Round with Open Stud" },
+  "3171": { "ldraw": "48729a", "nombre_ldraw": "Bar 1.5L with Clip without Hole in Shaft" },
+  "35395": { "ldraw": "4740", "nombre_ldraw": "Dish 2 x 2 Inverted" },
+  "44690": { "ldraw": "14769", "nombre_ldraw": "Tile 2 x 2 Round with Round Underside Stud" },
+  "44842": { "ldraw": "60897", "nombre_ldraw": "Plate 1 x 1 with Clip Vertical (Thick C-Clip)" },
+  "67258": { "ldraw": "64847", "nombre_ldraw": "Animal Cow Horn" },
+  "81300": { "ldraw": "11477", "nombre_ldraw": "Slope Brick Curved 2 x 1" }
+}

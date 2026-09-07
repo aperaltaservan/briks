@@ -1,0 +1,21 @@
+# Para probar en local: docker compose up --build
+# En Dokploy no hace falta este fichero salvo que elijas el tipo de
+# despliegue "Docker Compose"; con "Dockerfile" basta configurar las mismas
+# variables de entorno y el volumen /app/data desde su interfaz.
+services:
+  lego:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      LEGO_ADMIN_USER: ${LEGO_ADMIN_USER:-admin}
+      LEGO_ADMIN_PASSWORD: ${LEGO_ADMIN_PASSWORD:?define LEGO_ADMIN_PASSWORD}
+      LEGO_SESSION_SECRET: ${LEGO_SESSION_SECRET:?define LEGO_SESSION_SECRET}
+      LEGO_MCP_TOKEN: ${LEGO_MCP_TOKEN:-}
+      LEGO_COOKIE_SECURE: ${LEGO_COOKIE_SECURE:-false}
+    volumes:
+      - lego-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  lego-data:
