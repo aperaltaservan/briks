@@ -71,4 +71,6 @@ def mcp_autorizado(request: Request) -> bool:
     """
     if not settings.mcp_token:
         return True
-    return request.headers.get("authorization", "") == f"Bearer {settings.mcp_token}"
+    return secrets.compare_digest(
+        request.headers.get("authorization", ""), f"Bearer {settings.mcp_token}"
+    )

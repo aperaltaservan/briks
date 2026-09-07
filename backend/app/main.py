@@ -72,6 +72,12 @@ async def exigir_sesion(request, call_next):
     completar un login interactivo: se protege con un token fijo en vez de
     con la cookie de sesión.
     """
+    # Un preflight nunca lleva credenciales (los navegadores las omiten a
+    # propósito): si lo bloqueamos aquí, CORSMiddleware -- más adentro en la
+    # pila -- nunca llega a contestarlo, y el navegador da por rota la
+    # petición real antes de enviarla siquiera.
+    if request.method == "OPTIONS":
+        return await call_next(request)
     ruta = request.url.path
     if ruta == "/mcp" or ruta.startswith("/mcp/"):
         if not mcp_autorizado(request):
