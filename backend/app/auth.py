@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import secrets
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .config import settings
+
+logger = logging.getLogger("lego.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -71,6 +75,14 @@ def mcp_autorizado(request: Request) -> bool:
     """
     if not settings.mcp_token:
         return True
-    return secrets.compare_digest(
-        request.headers.get("authorization", ""), f"Bearer {settings.mcp_token}"
-    )
+    cabecera = request.headers.get("authorization", "")
+    ok = secrets.compare_digest(cabecera, f"Bearer {settings.mcp_token}")
+    if not ok:
+        # Diagnóstico temporal: qué llega realmente en Authorization, sin
+        # volcar el token completo al log. Se quita en cuanto se resuelva.
+        if cabecera:
+            pista = f"{cabecera[:12]}...{cabecera[-4:]} (len={len(cabecera)})"
+        else:
+            pista = "(sin cabecera Authorization)"
+        logger.warning("MCP no autorizado: Authorization recibida = %s", pista)
+    return ok
