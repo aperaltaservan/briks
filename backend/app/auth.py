@@ -29,11 +29,13 @@ class Credenciales(BaseModel):
 
 
 def _validas(usuario: str, contrasena: str) -> bool:
-    # compare_digest en las dos comparaciones: evita filtrar por timing si el
-    # usuario ya es correcto pero la contraseña no.
-    return secrets.compare_digest(usuario, settings.admin_user) and secrets.compare_digest(
-        contrasena, settings.admin_password
-    )
+    # Las dos comparaciones se ejecutan siempre, sin cortocircuito: si "and"
+    # evaluara compare_digest(contrasena, ...) sólo cuando el usuario ya es
+    # correcto, el tiempo de respuesta filtraría si el usuario existe antes
+    # de comprobar la contraseña.
+    usuario_ok = secrets.compare_digest(usuario, settings.admin_user)
+    contrasena_ok = secrets.compare_digest(contrasena, settings.admin_password)
+    return usuario_ok and contrasena_ok
 
 
 @router.post("/login")
@@ -62,14 +64,11 @@ def ruta_publica(path: str) -> bool:
 def mcp_autorizado(request: Request) -> bool:
     """Sin token configurado, /mcp queda abierto -- igual que en local hoy.
 
-    Algunos clientes (ChatGPT) no dejan configurar la cabecera Authorization
-    tal cual en sus conectores, así que el token también se acepta como
-    parámetro de la URL (?token=...): cualquier formulario admite pegarlo ahí
-    aunque no tenga un campo específico para cabeceras.
+    Sólo por cabecera Authorization: un token en la URL queda en logs,
+    historial del navegador y cachés intermedias -- de hecho Cloudflare lo
+    bloquea con 421 delante de este mismo dominio, así que ni siquiera
+    llegaría a funcionar como atajo.
     """
     if not settings.mcp_token:
         return True
-    cabecera = request.headers.get("authorization", "")
-    if cabecera == f"Bearer {settings.mcp_token}":
-        return True
-    return request.query_params.get("token") == settings.mcp_token
+    return request.headers.get("authorization", "") == f"Bearer {settings.mcp_token}"
