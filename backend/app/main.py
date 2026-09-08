@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,7 @@ from mcp.server.auth.routes import (
     create_auth_routes,
 )
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.auth import ProtectedResourceMetadata
 from pydantic import AnyHttpUrl
 from starlette.middleware.sessions import SessionMiddleware
@@ -37,9 +39,34 @@ _RECURSO_MCP = (
 )
 _URL_METADATOS = str(build_resource_metadata_url(_RECURSO_MCP)) if _RECURSO_MCP else None
 
+# El SDK protege el transporte contra DNS rebinding y, si no se le dice nada,
+# da por buenos únicamente los Host de localhost. Detrás del proxy llega el
+# dominio real, así que toda petición a /mcp se iba en 421 ("Invalid Host
+# header") -- y justo después de que el cliente hubiera conseguido su token,
+# que es lo que hacía parecer roto el OAuth. Se declaran los hosts de verdad.
+_HOSTS_MCP = ["localhost", "127.0.0.1", "localhost:*", "127.0.0.1:*", "[::1]:*"]
+_ORIGENES_MCP = ["http://localhost:*", "http://127.0.0.1:*"]
+if settings.public_url:
+    _publico = urlparse(settings.public_url)
+    if _publico.netloc:
+        _HOSTS_MCP += [_publico.netloc, f"{_publico.hostname}:*"]
+        # Un cliente que hable desde un servidor no manda Origin y entonces no
+        # se comprueba; el nuestro se admite por si la llamada sale del propio
+        # sitio. Cualquier otro sigue rechazado: eso es lo que protege de que
+        # una web ajena use el navegador de alguien para hablar con /mcp.
+        _ORIGENES_MCP.append(f"{_publico.scheme}://{_publico.netloc}")
+
 # El MCP se sirve montado en /mcp. La ruta interna es "/" porque el prefijo
 # lo aporta el mount.
-mcp_app = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True)
+mcp_app = mcp.streamable_http_app(
+    streamable_http_path="/",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_HOSTS_MCP,
+        allowed_origins=_ORIGENES_MCP,
+    ),
+)
 
 
 @asynccontextmanager

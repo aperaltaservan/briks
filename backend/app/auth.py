@@ -73,9 +73,7 @@ async def mcp_autorizado(request: Request) -> bool:
     """Sin token configurado, /mcp queda abierto -- igual que en local hoy.
 
     Sólo por cabecera Authorization: un token en la URL queda en logs,
-    historial del navegador y cachés intermedias -- de hecho Cloudflare lo
-    bloquea con 421 delante de este mismo dominio, así que ni siquiera
-    llegaría a funcionar como atajo.
+    historial del navegador y cachés intermedias.
     """
     if not settings.mcp_token:
         return True
