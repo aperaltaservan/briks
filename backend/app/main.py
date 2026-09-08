@@ -9,7 +9,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.auth.routes import (
+    MetadataHandler,
     ProtectedResourceMetadataHandler,
+    build_metadata,
     build_resource_metadata_url,
     create_auth_routes,
 )
@@ -79,14 +81,45 @@ app.mount("/mcp", mcp_app)
 # Sin LEGO_PUBLIC_URL no se publican: en local basta el token fijo.
 if settings.public_url:
     _emisor = AnyHttpUrl(settings.public_url)
+    _registro = ClientRegistrationOptions(
+        enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]
+    )
+    _revocacion = RevocationOptions(enabled=True)
+    _RUTA_METADATOS_AS = "/.well-known/oauth-authorization-server"
+    # De las rutas del SDK se aparta la de metadatos: se republica abajo con
+    # un cambio. Starlette se queda con la primera que case, así que hay que
+    # sustituirla, no añadir otra igual.
     app.router.routes.extend(
-        create_auth_routes(
+        _ruta_sdk
+        for _ruta_sdk in create_auth_routes(
             provider=proveedor,
             issuer_url=_emisor,
-            client_registration_options=ClientRegistrationOptions(
-                enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]
-            ),
-            revocation_options=RevocationOptions(enabled=True),
+            client_registration_options=_registro,
+            revocation_options=_revocacion,
+        )
+        if getattr(_ruta_sdk, "path", None) != _RUTA_METADATOS_AS
+    )
+    # El SDK anuncia como métodos del /token sólo los que llevan secreto,
+    # pero el registro dinámico da de alta clientes públicos: ChatGPT se
+    # registra con "none" y no recibe ninguno. Un cliente que compare lo que
+    # le han dado con lo que el servidor dice admitir se planta ahí, así que
+    # se añade "none" a la lista.
+    _metadatos_as = build_metadata(
+        issuer_url=_emisor,
+        service_documentation_url=None,
+        client_registration_options=_registro,
+        revocation_options=_revocacion,
+    )
+    _metadatos_as.token_endpoint_auth_methods_supported = [
+        "none",
+        "client_secret_post",
+        "client_secret_basic",
+    ]
+    app.router.routes.append(
+        Route(
+            _RUTA_METADATOS_AS,
+            endpoint=MetadataHandler(_metadatos_as).handle,
+            methods=["GET", "OPTIONS"],
         )
     )
     _metadatos = ProtectedResourceMetadataHandler(
