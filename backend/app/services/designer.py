@@ -15,6 +15,10 @@ Reglas que se hacen cumplir aquí:
 
 Coordenadas, en unidades LEGO y enteras:
   x, z -> studs desde la esquina de la placa.   y -> placas desde el suelo.
+
+Aquí se coloca, se mueve una pieza y se lee el modelo. Rectificar en grupo lo
+ya construido (mover una pared entera, repintarla, duplicarla) es `editor.py`,
+y deshacer, `historial.py`: toda operación guarda antes una foto del modelo.
 """
 from __future__ import annotations
 
@@ -32,7 +36,7 @@ from ..models import (
     Placement,
 )
 from . import builds as builds_service
-from . import catalog, geometry, inventory, ldraw
+from . import catalog, geometry, historial, inventory, ldraw
 from .builds import BuildError
 
 # Nadie necesita una placa de 3 studs ni de 200: los límites evitan modelos
@@ -46,9 +50,14 @@ class DesignError(BuildError):
 
 
 # --------------------------------------------------------------------------
-# Utilidades internas
+# Utilidades del modelo
+#
+# Lo de aquí no es privado a propósito: `editor.py` construye sus operaciones
+# en grupo con estas mismas piezas (la forma de un molde, el volumen que ocupa
+# lo colocado, la altura de apoyo, las reservas). Si cada módulo se hiciera las
+# suyas, lo que se ve y lo que el motor considera ocupado dejarían de coincidir.
 # --------------------------------------------------------------------------
-def _require_build(session: Session, build_id: int) -> Build:
+def requiere_montaje(session: Session, build_id: int) -> Build:
     build = session.get(Build, int(build_id))
     if build is None:
         raise DesignError(f"No existe el montaje {build_id}.")
@@ -85,7 +94,7 @@ def forma_de_elemento(session: Session, element_id: str) -> geometry.Forma:
     return forma_de(element.part.name, element.design_id)
 
 
-def _paso_destino(
+def paso_destino(
     session: Session, build: Build, paso_id: int | None, titulo_paso: str | None
 ) -> BuildStep:
     """Paso en el que caen las piezas: el indicado, uno nuevo, o el último.
@@ -126,7 +135,7 @@ def _paso_destino(
     return paso
 
 
-def _colocaciones(session: Session, build_id: int) -> list[Placement]:
+def colocaciones_de(session: Session, build_id: int) -> list[Placement]:
     return list(
         session.scalars(
             select(Placement)
@@ -243,7 +252,7 @@ def _girar_celda(i: int, j: int, ancho: int, fondo: int, rotacion: int) -> tuple
     return i, j
 
 
-class _Volumen:
+class Volumen:
     """El sitio que ocupa una pieza: por cada casilla, desde y hasta qué altura."""
 
     __slots__ = ("columnas", "etiqueta", "colocacion_id")
@@ -280,17 +289,17 @@ def columnas_de(
     return salida
 
 
-def _ocupacion(
+def ocupacion(
     session: Session, colocaciones: Iterable[Placement], ignorar: set[int] | None = None
-) -> list[_Volumen]:
+) -> list[Volumen]:
     """Volumen ocupado por cada pieza ya colocada."""
     ignorar = ignorar or set()
-    salida: list[_Volumen] = []
+    salida: list[Volumen] = []
     for p in colocaciones:
         if p.id in ignorar:
             continue
         salida.append(
-            _Volumen(
+            Volumen(
                 columnas_de(p.element.part.name, p.element.design_id, p.x, p.y, p.z, p.rotation),
                 f"{p.element.part.name} (colocación {p.id})",
                 p.id,
@@ -299,8 +308,8 @@ def _ocupacion(
     return salida
 
 
-def _altura_de_apoyo(
-    ocupado: list[_Volumen], columnas: dict[tuple[int, int], tuple[int, int]]
+def altura_de_apoyo(
+    ocupado: list[Volumen], columnas: dict[tuple[int, int], tuple[int, int]]
 ) -> int:
     """Dónde cae una pieza soltada sobre el modelo.
 
@@ -321,8 +330,8 @@ def _altura_de_apoyo(
     return altura
 
 
-def _casillas_en_voladizo(
-    ocupado: list[_Volumen], columnas: dict[tuple[int, int], tuple[int, int]]
+def casillas_en_voladizo(
+    ocupado: list[Volumen], columnas: dict[tuple[int, int], tuple[int, int]]
 ) -> list[tuple[int, int]]:
     """Casillas de la pieza que no tienen nada justo debajo.
 
@@ -339,7 +348,7 @@ def _casillas_en_voladizo(
     return huecas
 
 
-def _colocadas_en_paso(session: Session, step_id: int, element_id: str) -> int:
+def colocadas_en_paso(session: Session, step_id: int, element_id: str) -> int:
     return int(
         session.scalar(
             select(func.count(Placement.id)).where(
@@ -350,14 +359,14 @@ def _colocadas_en_paso(session: Session, step_id: int, element_id: str) -> int:
     )
 
 
-def _reserva_tras_colocar(session: Session, step_id: int, element_id: str) -> None:
+def reserva_tras_colocar(session: Session, step_id: int, element_id: str) -> None:
     """Sube la reserva del paso sólo si las colocaciones superan lo declarado.
 
     Un paso escrito antes ("2 placas 2x6") ya tiene esas piezas reservadas: al
     darles sitio en el modelo no se vuelven a apartar del inventario. La reserva
     sólo crece cuando se coloca más de lo que el paso decía.
     """
-    colocadas = _colocadas_en_paso(session, step_id, element_id)
+    colocadas = colocadas_en_paso(session, step_id, element_id)
     linea = session.scalar(
         select(BuildStepPart).where(
             BuildStepPart.step_id == step_id, BuildStepPart.element_id == element_id
@@ -372,9 +381,9 @@ def _reserva_tras_colocar(session: Session, step_id: int, element_id: str) -> No
     session.flush()
 
 
-def _reserva_tras_quitar(session: Session, step_id: int, element_id: str) -> None:
+def reserva_tras_quitar(session: Session, step_id: int, element_id: str) -> None:
     """Baja la reserva una unidad, sin caer por debajo de lo que sigue colocado."""
-    colocadas = _colocadas_en_paso(session, step_id, element_id)
+    colocadas = colocadas_en_paso(session, step_id, element_id)
     linea = session.scalar(
         select(BuildStepPart).where(
             BuildStepPart.step_id == step_id, BuildStepPart.element_id == element_id
@@ -390,6 +399,31 @@ def _reserva_tras_quitar(session: Session, step_id: int, element_id: str) -> Non
     session.flush()
 
 
+def incremento_de_reserva(
+    session: Session, step_id: int, extra: dict[str, int]
+) -> dict[str, int]:
+    """Cuánto hay que apartar del inventario para colocar `extra` en ese paso.
+
+    Del inventario sólo se aparta lo que exceda de lo que el paso ya tenía
+    reservado: dar sitio a una pieza que el paso declaraba no la vuelve a
+    reservar.
+    """
+    declarado = {
+        linea.element_id: linea.quantity
+        for linea in session.scalars(select(BuildStepPart).where(BuildStepPart.step_id == step_id))
+    }
+    incremento: dict[str, int] = {}
+    for element_id, unidades in extra.items():
+        pendiente = (
+            colocadas_en_paso(session, step_id, element_id)
+            + unidades
+            - declarado.get(element_id, 0)
+        )
+        if pendiente > 0:
+            incremento[element_id] = pendiente
+    return incremento
+
+
 def _reservado_por_el_montaje(session: Session, build_id: int) -> dict[str, int]:
     filas = session.execute(
         select(BuildStepPart.element_id, func.sum(BuildStepPart.quantity))
@@ -400,7 +434,7 @@ def _reservado_por_el_montaje(session: Session, build_id: int) -> dict[str, int]
     return {element_id: int(total or 0) for element_id, total in filas}
 
 
-def _comprobar_disponibilidad(
+def comprobar_disponibilidad(
     session: Session, build: Build, extra: dict[str, int]
 ) -> list[dict[str, Any]]:
     """¿Hay piezas para lo que se quiere añadir?
@@ -453,12 +487,12 @@ def colocar_piezas(
     O entra el lote entero o no entra ninguna: una colocación a medias dejaría
     el modelo incoherente con las reservas.
     """
-    build = _require_build(session, build_id)
+    build = requiere_montaje(session, build_id)
     if not piezas:
         raise DesignError("No has indicado ninguna pieza que colocar.")
 
-    paso = _paso_destino(session, build, paso_id, titulo_paso)
-    ocupado = _ocupacion(session, _colocaciones(session, build.id))
+    paso = paso_destino(session, build, paso_id, titulo_paso)
+    ocupado = ocupacion(session, colocaciones_de(session, build.id))
     extra: dict[str, int] = {}
     nuevas: list[dict[str, Any]] = []
     avisos: list[str] = []
@@ -482,7 +516,7 @@ def colocar_piezas(
             )
 
         element = session.get(Element, element_id)
-        apoyo = _altura_de_apoyo(
+        apoyo = altura_de_apoyo(
             ocupado, columnas_de(element.part.name, element.design_id, x, 0, z, rotacion)
         )
         y_pedida = spec.get("y")
@@ -497,7 +531,7 @@ def colocar_piezas(
                     f"La pieza {indice} choca en ({x},{y},{z}) con {volumen.etiqueta}."
                 )
 
-        huecas = _casillas_en_voladizo(ocupado, columnas)
+        huecas = casillas_en_voladizo(ocupado, columnas)
         if huecas and len(huecas) == len(columnas):
             avisos.append(f"La pieza {indice} queda al aire en ({x},{y},{z}): no hay nada debajo.")
         elif huecas:
@@ -534,24 +568,11 @@ def colocar_piezas(
         )
         # Cuenta para las siguientes del lote: dos piezas del mismo lote
         # tampoco pueden pisarse.
-        ocupado.append(_Volumen(columnas, f"la pieza {indice} de este mismo lote"))
+        ocupado.append(Volumen(columnas, f"la pieza {indice} de este mismo lote"))
 
-    # Del inventario sólo hay que apartar lo que exceda de lo que este paso ya
-    # tenía reservado: dar sitio a una pieza declarada no la reserva otra vez.
-    declarado = {
-        linea.element_id: linea.quantity
-        for linea in session.scalars(
-            select(BuildStepPart).where(BuildStepPart.step_id == paso.id)
-        )
-    }
-    incremento = {}
-    for element_id, unidades in extra.items():
-        ya = _colocadas_en_paso(session, paso.id, element_id)
-        pendiente = ya + unidades - declarado.get(element_id, 0)
-        if pendiente > 0:
-            incremento[element_id] = pendiente
-
-    faltantes = _comprobar_disponibilidad(session, build, incremento)
+    faltantes = comprobar_disponibilidad(
+        session, build, incremento_de_reserva(session, paso.id, extra)
+    )
     if faltantes and not permitir_faltantes:
         raise DesignError(
             "No hay piezas suficientes: "
@@ -561,6 +582,10 @@ def colocar_piezas(
                 for f in faltantes
             )
         )
+
+    historial.registrar(
+        session, build.id, f"Colocar {len(nuevas)} pieza{'' if len(nuevas) == 1 else 's'}"
+    )
 
     colocadas = []
     for nueva in nuevas:
@@ -575,7 +600,7 @@ def colocar_piezas(
         )
         session.add(placement)
         session.flush()
-        _reserva_tras_colocar(session, paso.id, nueva["element_id"])
+        reserva_tras_colocar(session, paso.id, nueva["element_id"])
         colocadas.append(placement.id)
 
     if build.status in ("planificado", "desmontado"):
@@ -621,7 +646,7 @@ def mover_pieza(
     placement = session.get(Placement, int(colocacion_id))
     if placement is None:
         raise DesignError(f"No existe la colocación {colocacion_id}.")
-    build = _require_build(session, placement.build_id)
+    build = requiere_montaje(session, placement.build_id)
 
     forma = forma_de_elemento(session, placement.element_id)
     nueva_rot = (
@@ -642,10 +667,10 @@ def mover_pieza(
         )
 
     # La pieza no debe estorbarse a sí misma al recalcular apoyo y choques.
-    ocupado = _ocupacion(session, _colocaciones(session, build.id), ignorar={placement.id})
+    ocupado = ocupacion(session, colocaciones_de(session, build.id), ignorar={placement.id})
     nombre, design_id = placement.element.part.name, placement.element.design_id
     if y is None:
-        nuevo_y = _altura_de_apoyo(
+        nuevo_y = altura_de_apoyo(
             ocupado, columnas_de(nombre, design_id, nuevo_x, 0, nuevo_z, nueva_rot)
         )
     else:
@@ -658,6 +683,7 @@ def mover_pieza(
         if volumen.choca_con(columnas):
             raise DesignError(f"Ahí choca con {volumen.etiqueta}.")
 
+    historial.registrar(session, build.id, f"Mover {placement.element.part.name}")
     placement.x, placement.y, placement.z, placement.rotation = (
         nuevo_x,
         nuevo_y,
@@ -686,21 +712,30 @@ def quitar_pieza(session: Session, colocacion_id: int) -> dict[str, Any]:
         "element_id": placement.element_id,
         "paso_id": placement.step_id,
     }
+    historial.registrar(session, placement.build_id, f"Quitar {placement.element.part.name}")
     session.delete(placement)
     session.flush()
-    _reserva_tras_quitar(session, datos["paso_id"], datos["element_id"])
+    reserva_tras_quitar(session, datos["paso_id"], datos["element_id"])
     return {"eliminada": True, **datos}
 
 
 def vaciar(session: Session, build_id: int, paso_id: int | None = None) -> dict[str, Any]:
     """Quita todas las piezas del modelo, o sólo las de un paso."""
-    build = _require_build(session, build_id)
+    build = requiere_montaje(session, build_id)
     stmt = select(Placement).where(Placement.build_id == build.id)
     if paso_id:
         stmt = stmt.where(Placement.step_id == int(paso_id))
+    a_borrar = list(session.scalars(stmt))
+    if a_borrar:
+        historial.registrar(
+            session,
+            build.id,
+            f"Vaciar {'el paso' if paso_id else 'el modelo'} ({len(a_borrar)} piezas)",
+        )
+
     borradas = 0
     afectados: set[tuple[int, str]] = set()
-    for placement in list(session.scalars(stmt)):
+    for placement in a_borrar:
         afectados.add((placement.step_id, placement.element_id))
         session.delete(placement)
         borradas += 1
@@ -708,18 +743,18 @@ def vaciar(session: Session, build_id: int, paso_id: int | None = None) -> dict[
     for step_id, element_id in afectados:
         # Ya no queda ninguna colocación de esa pieza en el paso: la reserva
         # baja hasta lo que siga declarado a mano, o desaparece.
-        _reserva_tras_quitar(session, step_id, element_id)
+        reserva_tras_quitar(session, step_id, element_id)
     return {"montaje_id": build.id, "paso_id": paso_id, "eliminadas": borradas}
 
 
 def configurar_placa(session: Session, build_id: int, ancho: int, fondo: int) -> dict[str, Any]:
     """Cambia el tamaño de la placa base, si no deja piezas fuera."""
-    build = _require_build(session, build_id)
+    build = requiere_montaje(session, build_id)
     ancho, fondo = int(ancho), int(fondo)
     if not (PLACA_MIN <= ancho <= PLACA_MAX and PLACA_MIN <= fondo <= PLACA_MAX):
         raise DesignError(f"La placa debe medir entre {PLACA_MIN} y {PLACA_MAX} studs por lado.")
 
-    for placement in _colocaciones(session, build.id):
+    for placement in colocaciones_de(session, build.id):
         forma = forma_de(placement.element.part.name, placement.element.design_id)
         p_ancho, p_fondo = forma.rotada(placement.rotation)
         if placement.x + p_ancho > ancho or placement.z + p_fondo > fondo:
@@ -728,6 +763,7 @@ def configurar_placa(session: Session, build_id: int, ancho: int, fondo: int) ->
                 f"(colocación {placement.id}) quedaría fuera."
             )
 
+    historial.registrar(session, build.id, f"Placa a {ancho}x{fondo}")
     build.baseplate_w, build.baseplate_d = ancho, fondo
     session.flush()
     return {"montaje_id": build.id, "placa": {"ancho": ancho, "fondo": fondo}}
@@ -741,7 +777,7 @@ def _ajuste_de(element: Element, forma: geometry.Forma) -> dict[str, float] | No
     return ajuste_de_dibujo(forma, reales) if reales else None
 
 
-def _placement_dict(placement: Placement, forma: geometry.Forma) -> dict[str, Any]:
+def pieza_a_dict(placement: Placement, forma: geometry.Forma) -> dict[str, Any]:
     element = placement.element
     columnas = columnas_de(
         element.part.name,
@@ -783,15 +819,15 @@ def _huella(pieza: dict[str, Any]) -> tuple[int, int]:
 
 def modelo(session: Session, build_id: int, con_mapa: bool = False) -> dict[str, Any]:
     """El modelo completo: placa, piezas colocadas y pasos, listo para dibujar."""
-    build = _require_build(session, build_id)
-    colocaciones = _colocaciones(session, build.id)
+    build = requiere_montaje(session, build_id)
+    colocaciones = colocaciones_de(session, build.id)
 
     piezas = []
     alto_max = 0
     for placement in colocaciones:
         forma = forma_de(placement.element.part.name, placement.element.design_id)
         alto_max = max(alto_max, placement.y + forma.alto)
-        piezas.append(_placement_dict(placement, forma))
+        piezas.append(pieza_a_dict(placement, forma))
 
     pasos = [
         {
@@ -816,6 +852,9 @@ def modelo(session: Session, build_id: int, con_mapa: bool = False) -> dict[str,
         "total_piezas": len(piezas),
         "pasos": pasos,
         "piezas": piezas,
+        # Qué se puede deshacer ahora mismo: el editor lo mira para saber si
+        # tiene sentido ofrecer los botones de deshacer y rehacer.
+        "historial": historial.estado(session, build.id),
     }
     if con_mapa:
         datos["mapa"] = mapa_por_capas(piezas)
@@ -875,8 +914,8 @@ def instrucciones(session: Session, build_id: int) -> dict[str, Any]:
     recuadro de piezas de los manuales) y cuántas había ya montadas, para poder
     dibujar lo anterior en gris y lo nuevo en color.
     """
-    build = _require_build(session, build_id)
-    colocaciones = _colocaciones(session, build.id)
+    build = requiere_montaje(session, build_id)
+    colocaciones = colocaciones_de(session, build.id)
     formas = {
         p.id: forma_de(p.element.part.name, p.element.design_id)
         for p in colocaciones
@@ -938,7 +977,7 @@ def instrucciones(session: Session, build_id: int) -> dict[str, Any]:
                 "estado": paso.status,
                 "piezas_del_paso": sorted(resumen.values(), key=lambda p: -p["cantidad"]),
                 "sin_colocar": sin_colocar,
-                "nuevas": [_placement_dict(p, formas[p.id]) for p in nuevas],
+                "nuevas": [pieza_a_dict(p, formas[p.id]) for p in nuevas],
                 "piezas_previas": acumulado,
             }
         )
@@ -958,7 +997,7 @@ def instrucciones(session: Session, build_id: int) -> dict[str, Any]:
 
 def piezas_utilizables(session: Session, build_id: int, limite: int = 200) -> dict[str, Any]:
     """Paleta del diseñador: lo que hay disponible, con su forma ya resuelta."""
-    build = _require_build(session, build_id)
+    build = requiere_montaje(session, build_id)
     listado = inventory.list_inventory(session, solo_disponibles=True, limit=limite)
     piezas = []
     for item in listado["items"]:

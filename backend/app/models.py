@@ -260,6 +260,28 @@ class Placement(Base):
     )
 
 
+class DesignSnapshot(Base):
+    """Una foto del modelo, para poder deshacer.
+
+    Guardar el estado anterior entero es más simple que anotar el inverso de
+    cada operación, y vale igual para lo que se hace desde la web que para lo
+    que hace el chat: los dos pasan por los mismos servicios. Cada montaje tiene
+    dos pilas, la de deshacer y la de rehacer, ordenadas por `seq`.
+    """
+
+    __tablename__ = "design_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    build_id: Mapped[int] = mapped_column(ForeignKey("builds.id", ondelete="CASCADE"), index=True)
+    pila: Mapped[str] = mapped_column(String(10), index=True)  # deshacer | rehacer
+    seq: Mapped[int] = mapped_column(Integer)
+    descripcion: Mapped[str] = mapped_column(String(160), default="")
+    datos: Mapped[str] = mapped_column(Text)  # JSON con placa, colocaciones y reservas
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (Index("ix_snapshots_build_pila", "build_id", "pila", "seq"),)
+
+
 # --------------------------------------------------------------------------
 # OAuth del servidor MCP
 # --------------------------------------------------------------------------

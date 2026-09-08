@@ -14,7 +14,17 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Element, LegoSet, SetPart
-from ..services import builds, catalog, designer, importers, inventory, ldraw, recognition
+from ..services import (
+    builds,
+    catalog,
+    designer,
+    editor,
+    historial,
+    importers,
+    inventory,
+    ldraw,
+    recognition,
+)
 from ..services.builds import BuildError
 from ..services.inventory import InventoryError
 from ..services.recognition import RecognitionError
@@ -125,6 +135,50 @@ class MovimientoPieza(BaseModel):
 class TamanoPlaca(BaseModel):
     ancho: int
     fondo: int
+
+
+# Edición en lote: todas las operaciones del editor trabajan sobre una
+# selección de colocaciones, así que comparten la lista de ids.
+class Seleccion(BaseModel):
+    ids: list[int]
+
+
+class MovimientoLote(Seleccion):
+    dx: int = 0
+    dy: int = 0
+    dz: int = 0
+    # Con apoyar, el grupo cae sobre lo que haya debajo en vez de subir o bajar
+    # una altura fija.
+    apoyar: bool = False
+
+
+class DuplicadoLote(Seleccion):
+    dx: int = 0
+    dy: int = 0
+    dz: int = 0
+    paso_id: int | None = None
+    titulo_paso: str | None = None
+    permitir_faltantes: bool = False
+
+
+class GiroLote(Seleccion):
+    grados: int = 90
+
+
+class EspejoLote(Seleccion):
+    eje: str = "x"
+
+
+class SustitucionLote(Seleccion):
+    element_id: str | None = None
+    color: str | None = None
+    descripcion: str | None = None
+    permitir_faltantes: bool = False
+
+
+class PasoDeLote(Seleccion):
+    paso_id: int | None = None
+    titulo_paso: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -531,6 +585,163 @@ def cambiar_placa(
     resultado = _ejecutar(designer.configurar_placa, session, montaje_id, datos.ancho, datos.fondo)
     session.commit()
     return resultado
+
+
+# --------------------------------------------------------------------------
+# Editor: operaciones sobre una selección de piezas
+# --------------------------------------------------------------------------
+@router.post("/montajes/{montaje_id}/edicion/mover")
+def edicion_mover(
+    montaje_id: int, datos: MovimientoLote, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(
+        editor.mover,
+        session,
+        montaje_id,
+        datos.ids,
+        dx=datos.dx,
+        dy=datos.dy,
+        dz=datos.dz,
+        apoyar=datos.apoyar,
+    )
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/edicion/girar")
+def edicion_girar(
+    montaje_id: int, datos: GiroLote, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(editor.girar, session, montaje_id, datos.ids, grados=datos.grados)
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/edicion/reflejar")
+def edicion_reflejar(
+    montaje_id: int, datos: EspejoLote, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(editor.reflejar, session, montaje_id, datos.ids, eje=datos.eje)
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/edicion/duplicar")
+def edicion_duplicar(
+    montaje_id: int, datos: DuplicadoLote, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(
+        editor.duplicar,
+        session,
+        montaje_id,
+        datos.ids,
+        dx=datos.dx,
+        dy=datos.dy,
+        dz=datos.dz,
+        paso_id=datos.paso_id,
+        titulo_paso=datos.titulo_paso,
+        permitir_faltantes=datos.permitir_faltantes,
+    )
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/edicion/sustituir")
+def edicion_sustituir(
+    montaje_id: int, datos: SustitucionLote, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(
+        editor.sustituir,
+        session,
+        montaje_id,
+        datos.ids,
+        element_id=datos.element_id,
+        color=datos.color,
+        descripcion=datos.descripcion,
+        permitir_faltantes=datos.permitir_faltantes,
+    )
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/edicion/paso")
+def edicion_paso(
+    montaje_id: int, datos: PasoDeLote, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(
+        editor.cambiar_de_paso,
+        session,
+        montaje_id,
+        datos.ids,
+        paso_id=datos.paso_id,
+        titulo_paso=datos.titulo_paso,
+    )
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/edicion/quitar")
+def edicion_quitar(
+    montaje_id: int, datos: Seleccion, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    resultado = _ejecutar(editor.quitar, session, montaje_id, datos.ids)
+    session.commit()
+    return resultado
+
+
+@router.get("/montajes/{montaje_id}/seleccion")
+def edicion_seleccionar(
+    montaje_id: int,
+    element_id: str = "",
+    design_id: str = "",
+    color: str = "",
+    pieza: str = "",
+    paso_id: int = 0,
+    y: int | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return _ejecutar(
+        editor.seleccionar,
+        session,
+        montaje_id,
+        element_id=element_id or None,
+        design_id=design_id or None,
+        color=color or None,
+        pieza=pieza or None,
+        paso_id=paso_id or None,
+        y=y,
+    )
+
+
+@router.get("/elementos/{element_id}/colores")
+def colores_de_pieza(
+    element_id: str, todos: bool = False, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    return _ejecutar(editor.colores_de_pieza, session, element_id, solo_disponibles=not todos)
+
+
+# --------------------------------------------------------------------------
+# Deshacer y rehacer
+# --------------------------------------------------------------------------
+@router.post("/montajes/{montaje_id}/deshacer")
+def deshacer(montaje_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    resultado = _ejecutar(historial.deshacer, session, montaje_id)
+    session.commit()
+    return resultado
+
+
+@router.post("/montajes/{montaje_id}/rehacer")
+def rehacer(montaje_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    resultado = _ejecutar(historial.rehacer, session, montaje_id)
+    session.commit()
+    return resultado
+
+
+@router.get("/montajes/{montaje_id}/historial")
+def ver_historial(
+    montaje_id: int, limite: int = 20, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    return _ejecutar(historial.lista, session, montaje_id, limite)
 
 
 # --------------------------------------------------------------------------

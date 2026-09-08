@@ -8,6 +8,7 @@
  *   1 stud = 1 unidad en X y Z · 1 placa = 0,4 unidades en Y (un ladrillo son 3).
  */
 import * as THREE from "/static/vendor/three.module.min.js";
+import * as edicion from "/static/edicion.js";
 
 const STUD = 1;
 const PLACA = 0.4;
@@ -26,6 +27,9 @@ const estado = {
   modelo: null,
   instrucciones: null,
   modo: "disenar",
+  // Qué hace el clic sobre el lienzo. Es lo que convierte el visor en un
+  // editor: la misma escena sirve para construir, corregir, pintar o borrar.
+  herramienta: "colocar",
   pasoActivo: null,
   indicePaso: 0,
   piezaEnMano: null, // ficha de la paleta seleccionada
@@ -34,7 +38,12 @@ const estado = {
   // se puede intentar meter una pieza más abajo de donde el motor la dejaría:
   // si no cabe, el servidor dice contra qué choca en vez de subirla en silencio.
   desnivel: 0,
-  seleccion: null, // id de colocación seleccionada
+  seleccion: [], // ids de las colocaciones seleccionadas
+  portapapeles: [],
+  // Hasta qué altura se dibuja el modelo (null = entero) y si se enseña sólo
+  // esa capa: sin esto no hay forma de trabajar dentro de algo ya cerrado.
+  capaMaxima: null,
+  aislarCapa: false,
   paleta: [],
   filtroPaleta: "",
   iniciado: false,
@@ -89,8 +98,10 @@ function huella(forma, rotacion) {
 // Escena
 // --------------------------------------------------------------------------
 let renderer, escena, camara, raycaster;
-let grupoPlaca, grupoModelo, grupoFantasma, marcoSeleccion;
+let grupoPlaca, grupoModelo, grupoFantasma, grupoMarcos;
 let pendienteRender = false;
+
+const COLOR_SELECCION = new THREE.Color("#f5c518");
 
 const orbita = { theta: Math.PI * 0.25, phi: Math.PI * 0.32, radio: 42, objetivo: new THREE.Vector3() };
 const raton = new THREE.Vector2();
@@ -181,11 +192,8 @@ function iniciarEscena() {
   grupoPlaca = new THREE.Group();
   grupoModelo = new THREE.Group();
   grupoFantasma = new THREE.Group();
-  escena.add(grupoPlaca, grupoModelo, grupoFantasma);
-
-  marcoSeleccion = new THREE.Box3Helper(new THREE.Box3(), new THREE.Color("#f5c518"));
-  marcoSeleccion.visible = false;
-  escena.add(marcoSeleccion);
+  grupoMarcos = new THREE.Group();
+  escena.add(grupoPlaca, grupoModelo, grupoFantasma, grupoMarcos);
 
   raycaster = new THREE.Raycaster();
 
@@ -245,13 +253,27 @@ function recentrar() {
   actualizarCamara();
 }
 
-/** Piezas que se están mostrando: todas, o las de hasta el paso en curso. */
+/** Piezas que se están mostrando: todas, las de hasta el paso en curso, o las
+ *  que deja pasar el filtro de capas. */
 function piezasVisibles() {
   if (estado.modo === "instrucciones" && estado.instrucciones) {
     const hasta = Math.min(estado.indicePaso, estado.instrucciones.pasos.length - 1);
-    return estado.instrucciones.pasos.slice(0, hasta + 1).flatMap((p) => p.nuevas);
+    return estado.instrucciones.pasos
+      .slice(0, hasta + 1)
+      .flatMap((p) => p.nuevas)
+      .filter(visibleEnLaCapa);
   }
-  return estado.modelo?.piezas || [];
+  return (estado.modelo?.piezas || []).filter(visibleEnLaCapa);
+}
+
+/** El filtro de capas. Un modelo cerrado tapa su propio interior: bajando el
+ *  techo se llega a lo de dentro, que es donde suele estar el error. */
+function visibleEnLaCapa(pieza) {
+  if (estado.capaMaxima === null) return true;
+  if (estado.aislarCapa) {
+    return pieza.y <= estado.capaMaxima && estado.capaMaxima < pieza.y + pieza.forma.alto;
+  }
+  return pieza.y <= estado.capaMaxima;
 }
 
 // --------------------------------------------------------------------------
@@ -455,7 +477,6 @@ function dibujarPlaca(ancho, fondo) {
 // --------------------------------------------------------------------------
 function dibujarModelo() {
   grupoModelo.clear();
-  marcoSeleccion.visible = false;
   if (!estado.modelo) return solicitarRender();
 
   if (estado.modo === "instrucciones" && estado.instrucciones) {
@@ -463,26 +484,49 @@ function dibujarModelo() {
     const hasta = Math.min(estado.indicePaso, pasos.length - 1);
     pasos.forEach((paso, indice) => {
       if (indice > hasta) return;
-      paso.nuevas.forEach((pieza) => {
+      paso.nuevas.filter(visibleEnLaCapa).forEach((pieza) => {
         grupoModelo.add(mallaPieza(pieza, indice === hasta ? "normal" : "atenuada"));
       });
     });
   } else {
-    estado.modelo.piezas.forEach((pieza) => grupoModelo.add(mallaPieza(pieza, "normal")));
+    piezasVisibles().forEach((pieza) => grupoModelo.add(mallaPieza(pieza, "normal")));
+  }
+  resaltarSeleccion();
+}
+
+/** Recuadra en amarillo lo seleccionado, un marco por pieza.
+ *
+ * Se dibujan por encima de todo a propósito (`depthTest` desactivado): al
+ * editar por dentro de un modelo, media selección queda detrás de otras piezas
+ * y hay que seguir viéndola. */
+function resaltarSeleccion() {
+  grupoMarcos.clear();
+  const elegidas = new Set(estado.seleccion);
+  if (elegidas.size) {
+    for (const objeto of grupoModelo.children) {
+      if (!elegidas.has(objeto.userData.colocacionId)) continue;
+      const marco = new THREE.Box3Helper(
+        new THREE.Box3().setFromObject(objeto),
+        COLOR_SELECCION
+      );
+      marco.material.depthTest = false;
+      marco.renderOrder = 5;
+      grupoMarcos.add(marco);
+    }
   }
   solicitarRender();
 }
 
-function resaltarSeleccion() {
-  const objetivo = grupoModelo.children.find(
-    (g) => g.userData.colocacionId === estado.seleccion
-  );
-  if (!objetivo) {
-    marcoSeleccion.visible = false;
-  } else {
-    const caja = new THREE.Box3().setFromObject(objetivo);
-    marcoSeleccion.box.copy(caja);
-    marcoSeleccion.visible = true;
+/** Vista previa del grupo que se está arrastrando, ya en su destino. */
+function fantasmaDeGrupo(piezas, dx, dy, dz, cabe) {
+  grupoFantasma.clear();
+  for (const pieza of piezas) {
+    grupoFantasma.add(
+      mallaPieza(
+        { ...pieza, x: pieza.x + dx, y: pieza.y + dy, z: pieza.z + dz },
+        cabe ? "fantasma-ok" : "fantasma-mal"
+      )
+    );
   }
   solicitarRender();
 }
@@ -523,13 +567,40 @@ function alturaDeApoyo(columnas) {
   return altura;
 }
 
-/** Casilla de la placa bajo el cursor, centrando la pieza en el puntero. */
-function casillaBajoCursor(evento) {
-  const lienzo = $("#dis-lienzo");
-  const caja = lienzo.getBoundingClientRect();
+/** Lanza el rayo del ratón hacia la escena. Lo usan todas las herramientas. */
+function apuntar(evento) {
+  const caja = $("#dis-lienzo").getBoundingClientRect();
   raton.x = ((evento.clientX - caja.left) / caja.width) * 2 - 1;
   raton.y = -((evento.clientY - caja.top) / caja.height) * 2 + 1;
   raycaster.setFromCamera(raton, camara);
+}
+
+/** Colocación que hay bajo el cursor, o null si se apunta al vacío. */
+function piezaBajoCursor(evento) {
+  apuntar(evento);
+  const tocadas = raycaster.intersectObjects(grupoModelo.children, true);
+  if (!tocadas.length) return null;
+  let objeto = tocadas[0].object;
+  while (objeto && objeto.userData.colocacionId === undefined) objeto = objeto.parent;
+  return objeto?.userData.colocacionId ?? null;
+}
+
+/** Dónde corta el cursor un plano horizontal a `y` placas de altura.
+ *
+ * Es lo que convierte el ratón en un desplazamiento en studs al arrastrar un
+ * grupo: se mide sobre el plano de la pieza que se ha agarrado, no sobre el
+ * suelo, para que la pieza no se escape al mover la vista. */
+function puntoEnPlano(evento, y) {
+  apuntar(evento);
+  const plano = new THREE.Plane(new THREE.Vector3(0, 1, 0), -y * PLACA);
+  const punto = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plano, punto)) return null;
+  return punto.sub(grupoPlaca.position);
+}
+
+/** Casilla de la placa bajo el cursor, centrando la pieza en el puntero. */
+function casillaBajoCursor(evento) {
+  apuntar(evento);
 
   const ficha = estado.piezaEnMano;
   const forma = ficha?.forma;
@@ -636,7 +707,7 @@ function actualizarFantasma(evento) {
     transparente: false,
   };
   grupoFantasma.add(mallaPieza(previa, cabe ? "fantasma-ok" : "fantasma-mal"));
-  pintarSeleccion();
+  edicion.pintarPanel();
   solicitarRender();
 }
 
@@ -689,34 +760,95 @@ async function colocarEnCursor(evento) {
   }
 }
 
-function seleccionarEnCursor(evento) {
-  const caja = $("#dis-lienzo").getBoundingClientRect();
-  raton.x = ((evento.clientX - caja.left) / caja.width) * 2 - 1;
-  raton.y = -((evento.clientY - caja.top) / caja.height) * 2 + 1;
-  raycaster.setFromCamera(raton, camara);
-  const tocadas = raycaster.intersectObjects(grupoModelo.children, true);
-  if (!tocadas.length) {
-    estado.seleccion = null;
-  } else {
-    let objeto = tocadas[0].object;
-    while (objeto && objeto.userData.colocacionId === undefined) objeto = objeto.parent;
-    estado.seleccion = objeto?.userData.colocacionId ?? null;
+/** Qué hace un clic en el lienzo. Cada herramienta responde a lo suyo. */
+function clicEnLienzo(evento) {
+  const sumar = evento.ctrlKey || evento.metaKey || evento.shiftKey;
+  const id = piezaBajoCursor(evento);
+
+  switch (estado.herramienta) {
+    case "colocar":
+      // Sin pieza en mano, el pincel no tiene qué poner: se comporta como el
+      // puntero de siempre y selecciona.
+      if (estado.piezaEnMano) return colocarEnCursor(evento);
+      return edicion.seleccionar(id, { anadir: sumar });
+    case "borrar":
+      if (id === null) return;
+      edicion.seleccionar(id);
+      return edicion.quitar();
+    case "pintar":
+      return pintarPiezaDelCursor(id);
+    case "cuentagotas":
+      return cogerPiezaDelModelo(id);
+    default:
+      return edicion.seleccionar(id, { anadir: sumar });
   }
-  resaltarSeleccion();
-  pintarSeleccion();
 }
 
-async function quitarSeleccion() {
-  if (estado.modo !== "disenar") return avisar("Cambia a «Diseñar» para modificar el modelo.", "error");
-  if (!estado.seleccion) return avisar("No hay ninguna pieza seleccionada.", "error");
-  try {
-    await api(`/api/colocaciones/${estado.seleccion}`, { method: "DELETE" });
-    estado.seleccion = null;
-    avisar("Pieza retirada; vuelve a estar disponible.");
-    await recargar({ conservarVista: true });
-  } catch (e) {
-    avisar(e.message, "error");
+/** El bote de pintura usa el color de la pieza elegida en la paleta. */
+function pintarPiezaDelCursor(id) {
+  if (id === null) return;
+  if (!estado.piezaEnMano) {
+    return avisar("Elige en la paleta una pieza del color con el que quieres pintar.", "error");
   }
+  edicion.seleccionar(id);
+  return edicion.pintarDe({ color: estado.piezaEnMano.color });
+}
+
+/** Cuentagotas: coge en mano la pieza que ya está puesta, para repetirla. */
+function cogerPiezaDelModelo(id) {
+  const pieza = (estado.modelo?.piezas || []).find((p) => p.id === id);
+  if (!pieza) return;
+  const ficha = estado.paleta.find((f) => f.element_id === pieza.element_id);
+  if (!ficha) {
+    return avisar(`No te quedan ${pieza.pieza} (${pieza.color}) libres para poner más.`, "error");
+  }
+  estado.piezaEnMano = ficha;
+  estado.rotacion = pieza.rotacion;
+  estado.desnivel = 0;
+  $("#dis-rotacion").textContent = `${estado.rotacion}°`;
+  cambiarHerramienta("colocar");
+  pintarPaleta();
+  edicion.pintarPanel();
+  avisar(`${ficha.pieza} (${ficha.color}) en mano: ${ficha.disponible} libres.`);
+}
+
+function quitarSeleccion() {
+  if (estado.modo !== "disenar") return avisar("Cambia a «Diseñar» para modificar el modelo.", "error");
+  if (!estado.seleccion.length) return avisar("No hay ninguna pieza seleccionada.", "error");
+  return edicion.quitar();
+}
+
+/** Cambia la herramienta activa y deja el lienzo coherente con ella. */
+function cambiarHerramienta(nombre) {
+  estado.herramienta = nombre;
+  if (nombre !== "colocar") {
+    grupoFantasma.clear();
+    solicitarRender();
+  }
+  const lienzo = $("#dis-lienzo");
+  lienzo.className = `modo-${nombre}`;
+  document
+    .querySelectorAll("#dis-herramientas button")
+    .forEach((b) => b.classList.toggle("activa", b.dataset.herramienta === nombre));
+  pintarAyuda();
+}
+
+/** El pie del lienzo explica lo que se puede hacer ahora mismo. */
+function pintarAyuda() {
+  const comun =
+    "Botón derecho: girar la vista · Rueda: zoom · <kbd>Mayús</kbd>+arrastrar: desplazar";
+  const segun = {
+    seleccionar:
+      "Clic: elegir · <kbd>Ctrl</kbd>+clic: sumar · arrastrar en el vacío: encuadrar varias · " +
+      "arrastrar una pieza: mover el grupo · <kbd>←→↑↓</kbd> mover · <kbd>R</kbd> girar · <kbd>Supr</kbd> quitar",
+    colocar:
+      "Clic: colocar la pieza en mano · <kbd>R</kbd> girar · <kbd>+</kbd>/<kbd>−</kbd> subir o bajar · <kbd>Esc</kbd> soltar",
+    pintar: "Clic: pintar esa pieza del color de la que tengas elegida en la paleta",
+    borrar: "Clic: quitar esa pieza del modelo (vuelve al inventario)",
+    cuentagotas: "Clic: coger en mano la pieza señalada para repetirla",
+  };
+  const caja = $("#dis-ayuda");
+  if (caja) caja.innerHTML = `${segun[estado.herramienta] || ""} · ${comun}`;
 }
 
 // --------------------------------------------------------------------------
@@ -725,38 +857,92 @@ async function quitarSeleccion() {
 function conectarRaton(lienzo) {
   let arrastrando = false;
   let movido = false;
-  let modoArrastre = null; // "orbitar" | "desplazar"
+  // "orbitar" | "desplazar" | "mover-piezas" | "encuadrar"
+  let modoArrastre = null;
   let ultimo = { x: 0, y: 0 };
+  let inicio = { x: 0, y: 0 };
+  let agarre = null; // qué piezas viajan con el ratón y desde dónde
+  let recorrido = null; // desplazamiento en studs del arrastre en curso
 
   lienzo.addEventListener("contextmenu", (e) => e.preventDefault());
 
   lienzo.addEventListener("pointerdown", (evento) => {
     arrastrando = true;
     movido = false;
-    ultimo = { x: evento.clientX, y: evento.clientY };
-    modoArrastre = evento.shiftKey || evento.button === 1 ? "desplazar" : "orbitar";
+    inicio = ultimo = { x: evento.clientX, y: evento.clientY };
     lienzo.setPointerCapture(evento.pointerId);
+    modoArrastre = null;
+    agarre = null;
+    recorrido = null;
+
+    // La vista se maneja con el botón derecho (o el central, o con Mayús): el
+    // izquierdo queda entero para trabajar sobre el modelo.
+    if (evento.button !== 0) {
+      modoArrastre = evento.button === 1 ? "desplazar" : "orbitar";
+      return;
+    }
+    if (evento.shiftKey) return void (modoArrastre = "desplazar");
+    if (estado.modo !== "disenar") return void (modoArrastre = "orbitar");
+    if (estado.herramienta !== "seleccionar") return;
+
+    const id = piezaBajoCursor(evento);
+    if (id === null) {
+      modoArrastre = "encuadrar";
+      marcoEncuadre(inicio, inicio);
+      return;
+    }
+    // Arrastrar una pieza mueve con ella todo lo seleccionado; si no estaba
+    // elegida, pasa a estarlo antes de moverse.
+    if (!estado.seleccion.includes(id)) {
+      edicion.seleccionar(id, { anadir: evento.ctrlKey || evento.metaKey });
+    }
+    const piezas = (estado.modelo?.piezas || []).filter((p) => estado.seleccion.includes(p.id));
+    const referencia = piezas.find((p) => p.id === id) || piezas[0];
+    const punto = referencia ? puntoEnPlano(evento, referencia.y) : null;
+    if (punto) {
+      agarre = { piezas, y: referencia.y, punto };
+      modoArrastre = "mover-piezas";
+    }
   });
 
   lienzo.addEventListener("pointermove", (evento) => {
     if (!arrastrando) {
       estado.ultimoRaton = evento;
+      if (estado.herramienta === "colocar") actualizarFantasma(evento);
+      return;
+    }
+    // Un clic con un temblor de tres píxeles sigue siendo un clic.
+    if (!movido && Math.hypot(evento.clientX - inicio.x, evento.clientY - inicio.y) < 4) return;
+    movido = true;
+
+    if (modoArrastre === "mover-piezas") {
+      const punto = puntoEnPlano(evento, agarre.y);
+      if (!punto) return;
+      lienzo.classList.add("arrastrando-piezas");
+      recorrido = {
+        dx: Math.round(punto.x - agarre.punto.x),
+        dz: Math.round(punto.z - agarre.punto.z),
+      };
+      const estorbo =
+        recorrido.dx || recorrido.dz ? edicion.estorbo(recorrido.dx, 0, recorrido.dz) : null;
+      fantasmaDeGrupo(agarre.piezas, recorrido.dx, 0, recorrido.dz, !estorbo);
+      return;
+    }
+    if (modoArrastre === "encuadrar") {
+      marcoEncuadre(inicio, { x: evento.clientX, y: evento.clientY });
+      return;
+    }
+    // Con una pieza en mano, arrastrar sigue siendo colocar: girar la vista es
+    // cosa del botón derecho.
+    if (!modoArrastre && estado.piezaEnMano && estado.herramienta === "colocar") {
       actualizarFantasma(evento);
       return;
     }
+    if (!modoArrastre) modoArrastre = "orbitar";
+
+    lienzo.classList.add("girando");
     const dx = evento.clientX - ultimo.x;
     const dy = evento.clientY - ultimo.y;
-    // Un clic con un temblor de dos píxeles sigue siendo un clic.
-    if (!movido && Math.hypot(dx, dy) < 4) return;
-
-    // Con el botón izquierdo y una pieza en mano se coloca, no se gira la
-    // vista: girar es cosa del botón derecho.
-    if (evento.buttons === 1 && estado.piezaEnMano && estado.modo === "disenar" && !evento.shiftKey) {
-      actualizarFantasma(evento);
-      return;
-    }
-    movido = true;
-    lienzo.classList.add("girando");
     if (modoArrastre === "desplazar") {
       const escala = orbita.radio * 0.0016;
       const derecha = new THREE.Vector3().setFromMatrixColumn(camara.matrix, 0);
@@ -773,48 +959,201 @@ function conectarRaton(lienzo) {
 
   lienzo.addEventListener("pointerup", (evento) => {
     if (lienzo.hasPointerCapture(evento.pointerId)) lienzo.releasePointerCapture(evento.pointerId);
-    lienzo.classList.remove("girando");
+    lienzo.classList.remove("girando", "arrastrando-piezas");
     const eraClic = arrastrando && !movido;
+    const modo = modoArrastre;
+    const movimiento = recorrido;
     arrastrando = false;
+    modoArrastre = null;
+    agarre = null;
+    recorrido = null;
+
+    if (modo === "mover-piezas") {
+      grupoFantasma.clear();
+      solicitarRender();
+      if (eraClic || !movimiento || (!movimiento.dx && !movimiento.dz)) return;
+      const estorbo = edicion.estorbo(movimiento.dx, 0, movimiento.dz);
+      if (estorbo) return avisar(`Ahí no cabe: ${estorbo}.`, "error");
+      edicion.mover(movimiento.dx, 0, movimiento.dz);
+      return;
+    }
+    if (modo === "encuadrar") {
+      cerrarEncuadre(
+        inicio,
+        { x: evento.clientX, y: evento.clientY },
+        evento.ctrlKey || evento.metaKey || evento.shiftKey
+      );
+      return;
+    }
     if (!eraClic || evento.button !== 0) return;
-    if (estado.modo !== "disenar") return seleccionarEnCursor(evento);
-    if (estado.piezaEnMano) colocarEnCursor(evento);
-    else seleccionarEnCursor(evento);
+    if (estado.modo !== "disenar") return;
+    clicEnLienzo(evento);
   });
 
-  lienzo.addEventListener("wheel", (evento) => {
-    evento.preventDefault();
-    orbita.radio = Math.max(6, Math.min(160, orbita.radio * (evento.deltaY > 0 ? 1.1 : 0.91)));
-    actualizarCamara();
-  }, { passive: false });
+  lienzo.addEventListener(
+    "wheel",
+    (evento) => {
+      evento.preventDefault();
+      orbita.radio = Math.max(6, Math.min(160, orbita.radio * (evento.deltaY > 0 ? 1.1 : 0.91)));
+      actualizarCamara();
+    },
+    { passive: false }
+  );
 
+  conectarTeclado();
+}
+
+/** El rectángulo de encuadre se dibuja encima del lienzo, no dentro de la
+ *  escena: es una herramienta de la interfaz, no parte del modelo. */
+function marcoEncuadre(a, b) {
+  const marco = $("#dis-marco-seleccion");
+  const caja = $("#dis-lienzo").getBoundingClientRect();
+  marco.style.left = `${Math.min(a.x, b.x) - caja.left}px`;
+  marco.style.top = `${Math.min(a.y, b.y) - caja.top}px`;
+  marco.style.width = `${Math.abs(a.x - b.x)}px`;
+  marco.style.height = `${Math.abs(a.y - b.y)}px`;
+  marco.classList.remove("oculto");
+}
+
+/** Al soltar queda seleccionado todo lo que haya caído dentro del recuadro. */
+function cerrarEncuadre(a, b, sumar) {
+  $("#dis-marco-seleccion").classList.add("oculto");
+  const caja = $("#dis-lienzo").getBoundingClientRect();
+  const x0 = Math.min(a.x, b.x);
+  const x1 = Math.max(a.x, b.x);
+  const y0 = Math.min(a.y, b.y);
+  const y1 = Math.max(a.y, b.y);
+  // Un clic en el vacío no encuadra nada: lo que hace es soltar la selección.
+  if (x1 - x0 < 5 && y1 - y0 < 5) return edicion.limpiar();
+
+  const dentro = [];
+  const centro = new THREE.Vector3();
+  for (const objeto of grupoModelo.children) {
+    new THREE.Box3().setFromObject(objeto).getCenter(centro);
+    const proyectado = centro.clone().project(camara);
+    const px = caja.left + ((proyectado.x + 1) / 2) * caja.width;
+    const py = caja.top + ((1 - proyectado.y) / 2) * caja.height;
+    if (px >= x0 && px <= x1 && py >= y0 && py <= y1) dentro.push(objeto.userData.colocacionId);
+  }
+  edicion.seleccionar(dentro, { anadir: sumar });
+  avisar(`${dentro.length} pieza${dentro.length === 1 ? "" : "s"} en el encuadre.`);
+}
+
+/** Atajos del diseñador, pensados para no tener que soltar el ratón. */
+function conectarTeclado() {
   window.addEventListener("keydown", (evento) => {
     if (!$("#vista-disenador").classList.contains("activa")) return;
     if (["INPUT", "TEXTAREA", "SELECT"].includes(evento.target.tagName)) return;
-    if (evento.key === "r" || evento.key === "R") girarPieza();
-    else if (evento.key === "+" || evento.key === "PageUp") ajustarAltura(1);
-    else if (evento.key === "-" || evento.key === "PageDown") ajustarAltura(-1);
-    else if (evento.key === "Escape") soltarPieza();
-    else if (evento.key === "Delete" || evento.key === "Backspace") quitarSeleccion();
-    else if (evento.key === "ArrowRight" && estado.modo === "instrucciones") irAPaso(estado.indicePaso + 1);
-    else if (evento.key === "ArrowLeft" && estado.modo === "instrucciones") irAPaso(estado.indicePaso - 1);
+    if (evento.ctrlKey || evento.metaKey) return atajosDeControl(evento);
+
+    if (estado.modo === "instrucciones") {
+      if (evento.key === "ArrowRight") irAPaso(estado.indicePaso + 1);
+      else if (evento.key === "ArrowLeft") irAPaso(estado.indicePaso - 1);
+      return;
+    }
+
+    const herramientas = {
+      1: "seleccionar",
+      2: "colocar",
+      3: "pintar",
+      4: "borrar",
+      5: "cuentagotas",
+    };
+    if (herramientas[evento.key]) return cambiarHerramienta(herramientas[evento.key]);
+
+    switch (evento.key) {
+      case "r":
+      case "R":
+        return girarPieza();
+      case "+":
+      case "PageUp":
+        return ajustarAltura(1);
+      case "-":
+      case "PageDown":
+        return ajustarAltura(-1);
+      case "Escape":
+        return estado.piezaEnMano ? soltarPieza() : edicion.limpiar();
+      case "Delete":
+      case "Backspace":
+        evento.preventDefault();
+        return quitarSeleccion();
+      case "ArrowUp":
+      case "ArrowDown":
+      case "ArrowLeft":
+      case "ArrowRight": {
+        if (!estado.seleccion.length) return;
+        evento.preventDefault();
+        const [dx, dz] = direccionEnPantalla(evento.key);
+        return edicion.mover(dx, 0, dz);
+      }
+      default:
+        return;
+    }
   });
 }
 
-function girarPieza() {
-  estado.rotacion = (estado.rotacion + 90) % 360;
-  $("#dis-rotacion").textContent = `${estado.rotacion}°`;
-  pintarSeleccion();
+function atajosDeControl(evento) {
+  const acciones = {
+    z: () => (evento.shiftKey ? edicion.rehacer() : edicion.deshacer()),
+    y: () => edicion.rehacer(),
+    c: () => edicion.copiar(),
+    v: () => edicion.pegar(),
+    d: () => edicion.duplicar(1, 0, 0),
+    a: () => edicion.seleccionarTodo(),
+  };
+  const accion = acciones[evento.key.toLowerCase()];
+  if (!accion) return;
+  evento.preventDefault();
+  accion();
 }
 
-/** Sube o baja a mano la pieza en mano, en placas, respecto a donde se apoyaría. */
+/** Traduce una flecha a un movimiento en la rejilla según hacia dónde mire la
+ *  cámara: «derecha» es siempre la derecha de la pantalla, se haya girado la
+ *  vista como se haya girado. */
+function direccionEnPantalla(tecla) {
+  const derecha = new THREE.Vector3().setFromMatrixColumn(camara.matrix, 0);
+  derecha.y = 0;
+  derecha.normalize();
+  const adentro = new THREE.Vector3();
+  camara.getWorldDirection(adentro);
+  adentro.y = 0;
+  adentro.normalize();
+
+  const vector = {
+    ArrowRight: derecha,
+    ArrowLeft: derecha.clone().negate(),
+    ArrowUp: adentro,
+    ArrowDown: adentro.clone().negate(),
+  }[tecla];
+  // Un eje cada vez: en diagonal manda el dominante.
+  return Math.abs(vector.x) >= Math.abs(vector.z)
+    ? [Math.sign(vector.x), 0]
+    : [0, Math.sign(vector.z)];
+}
+
+/** R: gira la pieza en mano; sin pieza en mano, gira el grupo seleccionado. */
+function girarPieza() {
+  if (!estado.piezaEnMano) {
+    if (estado.seleccion.length) edicion.girar();
+    return;
+  }
+  estado.rotacion = (estado.rotacion + 90) % 360;
+  $("#dis-rotacion").textContent = `${estado.rotacion}°`;
+  edicion.pintarPanel();
+  if (estado.ultimoRaton) actualizarFantasma(estado.ultimoRaton);
+}
+
+/** +/−: sube o baja la pieza en mano, o la selección, una placa. */
 function ajustarAltura(delta) {
-  if (!estado.piezaEnMano) return;
+  if (!estado.piezaEnMano) {
+    if (estado.seleccion.length) edicion.mover(0, delta, 0);
+    return;
+  }
   estado.desnivel += delta;
   // Por debajo del suelo no hay nada que hacer; por encima se deja libertad.
   const apoyo = estado.previsualizacion?.apoyo ?? 0;
   if (apoyo + estado.desnivel < 0) estado.desnivel = -apoyo;
-  pintarSeleccion();
+  edicion.pintarPanel();
   if (estado.ultimoRaton) actualizarFantasma(estado.ultimoRaton);
 }
 
@@ -823,7 +1162,7 @@ function soltarPieza() {
   estado.desnivel = 0;
   grupoFantasma.clear();
   document.querySelectorAll("#dis-paleta .ficha").forEach((f) => f.classList.remove("activa"));
-  pintarSeleccion();
+  edicion.pintarPanel();
   solicitarRender();
 }
 
@@ -877,55 +1216,12 @@ function pintarPasos() {
     .map(
       (p) => `<div class="paso-item ${p.id === estado.pasoActivo ? "activo" : ""}" data-paso="${p.id}">
         <span>${p.posicion}. ${esc(p.titulo)}</span>
-        <span class="cuenta">${p.colocaciones} pzs</span>
+        <span class="cuenta">${p.colocaciones} pzs
+          <button class="pequeno" data-piezas-de="${p.id}"
+            title="Seleccionar las piezas de este paso">◎</button></span>
       </div>`
     )
     .join("");
-}
-
-/** Línea con la altura a la que caería la pieza en mano y el ajuste manual. */
-function alturaEnMano() {
-  const previa = estado.previsualizacion;
-  if (!previa) return "";
-  const ajuste = estado.desnivel
-    ? ` (apoyo ${previa.apoyo}, ajustada ${estado.desnivel > 0 ? "+" : ""}${estado.desnivel})`
-    : "";
-  const aviso = previa.cabe
-    ? ""
-    : ` <b style="color:#ff8080">ahí choca con otra pieza</b>`;
-  return `<div class="pista" style="margin:2px 0 0">Altura: ${previa.y} placa${
-    previa.y === 1 ? "" : "s"
-  }${ajuste}${aviso}</div>`;
-}
-
-function pintarSeleccion() {
-  const caja = $("#dis-seleccion");
-  if (estado.piezaEnMano) {
-    const p = estado.piezaEnMano;
-    caja.className = "seleccion";
-    caja.innerHTML = `
-      ${p.imagen ? `<img src="${esc(p.imagen)}" alt="" />` : ""}
-      <div><strong>${esc(p.pieza)}</strong></div>
-      <div class="pista" style="margin:2px 0 0">${esc(p.color)} · ${p.disponible} libres · girada ${estado.rotacion}°</div>
-      ${alturaEnMano()}
-      <div class="pista" style="margin:4px 0 0">Haz clic en la placa para colocarla. <kbd>+</kbd>/<kbd>−</kbd> la suben o bajan una placa.</div>`;
-    return;
-  }
-  if (estado.seleccion) {
-    const pieza = estado.modelo?.piezas.find((p) => p.id === estado.seleccion);
-    if (pieza) {
-      caja.className = "seleccion";
-      caja.innerHTML = `
-        <div><strong>${esc(pieza.pieza)}</strong></div>
-        <div class="pista" style="margin:2px 0 0">${esc(pieza.color)}</div>
-        <div class="coordenadas">x ${pieza.x} · y ${pieza.y} · z ${pieza.z} · ${pieza.rotacion}°</div>
-        <div class="fila"><button class="pequeno peligro" id="sel-quitar">Quitar del modelo</button></div>`;
-      $("#sel-quitar").addEventListener("click", quitarSeleccion);
-      return;
-    }
-  }
-  caja.className = "seleccion vacio";
-  caja.textContent = "Ninguna pieza seleccionada.";
 }
 
 function pintarInstruccion() {
@@ -1066,6 +1362,11 @@ async function recargar({ conservarVista = false } = {}) {
       estado.piezaEnMano = viva || null;
     }
 
+    // La selección sobrevive a la recarga mientras esas piezas sigan puestas:
+    // así mover, pintar o deshacer no obligan a volver a elegirlas.
+    const vivas = new Set(modelo.piezas.map((p) => p.id));
+    estado.seleccion = estado.seleccion.filter((id) => vivas.has(id));
+
     // La geometría real de cada molde, antes de dibujar nada.
     await asegurarMallas(modelo.piezas.map((p) => p.design_id));
 
@@ -1080,16 +1381,19 @@ async function recargar({ conservarVista = false } = {}) {
 
     $("#dis-placa-w").value = modelo.placa.ancho;
     $("#dis-placa-d").value = modelo.placa.fondo;
-    $("#dis-estado").textContent = `${modelo.total_piezas} piezas colocadas · altura ${modelo.altura_maxima} placas · ${modelo.estado}`;
+    $("#dis-estado").textContent =
+      `${modelo.total_piezas} piezas colocadas · altura ${modelo.altura_maxima} placas · ${modelo.estado}` +
+      (estado.seleccion.length ? ` · ${estado.seleccion.length} seleccionadas` : "");
 
+    ajustarControlDeCapas(modelo.altura_maxima);
     dibujarPlaca(modelo.placa.ancho, modelo.placa.fondo);
     dibujarModelo();
     pintarPaleta();
     pintarPasos();
-    pintarSeleccion();
+    edicion.pintarPanel();
+    edicion.pintarBotonesHistorial();
     pintarInstruccion();
     if (!conservarVista) recentrar();
-    resaltarSeleccion();
   } catch (e) {
     avisar(e.message, "error");
   } finally {
@@ -1105,7 +1409,11 @@ function aplicarModo() {
   document
     .querySelectorAll("#dis-modo button")
     .forEach((b) => b.classList.toggle("activa", b.dataset.modo === estado.modo));
-  if (!enDisenar) soltarPieza();
+  if (!enDisenar) {
+    soltarPieza();
+    edicion.limpiar();
+  }
+  pintarAyuda();
   dibujarModelo();
   recentrar();
 }
@@ -1113,13 +1421,80 @@ function aplicarModo() {
 // --------------------------------------------------------------------------
 // Enganches de la interfaz
 // --------------------------------------------------------------------------
+/** El deslizador de capas se ajusta a lo alto que sea el modelo. */
+function ajustarControlDeCapas(altura) {
+  const control = $("#dis-capa");
+  const maximo = Math.max(0, altura - 1);
+  control.max = String(maximo);
+  if (estado.capaMaxima !== null) estado.capaMaxima = Math.min(estado.capaMaxima, maximo);
+  control.value = String(estado.capaMaxima === null ? maximo : estado.capaMaxima);
+  $("#dis-capa-texto").textContent = textoDeCapa();
+}
+
+function textoDeCapa() {
+  if (estado.capaMaxima === null) return "todas";
+  return `${estado.aislarCapa ? "sólo" : "hasta"} ${estado.capaMaxima}`;
+}
+
+/** Puntos de vista de siempre: isométrica para construir, alzado para juzgar
+ *  las alturas y planta para cuadrar la rejilla. */
+function verDesde(vista) {
+  if (vista === "planta") {
+    orbita.phi = 0.13;
+  } else if (vista === "alzado") {
+    orbita.theta = Math.PI * 0.5;
+    orbita.phi = Math.PI / 2.05;
+  } else {
+    orbita.theta = Math.PI * 0.25;
+    orbita.phi = Math.PI * 0.32;
+  }
+  actualizarCamara();
+}
+
 function conectarInterfaz() {
   $("#dis-montaje").addEventListener("change", async (e) => {
     estado.montajeId = Number(e.target.value) || null;
     estado.pasoActivo = null;
-    estado.seleccion = null;
+    estado.seleccion = [];
     estado.indicePaso = 0;
+    estado.capaMaxima = null;
     await recargar();
+  });
+
+  $("#dis-herramientas").addEventListener("click", (evento) => {
+    const boton = evento.target.closest("button[data-herramienta]");
+    if (boton) cambiarHerramienta(boton.dataset.herramienta);
+  });
+
+  $("#dis-deshacer").addEventListener("click", () => edicion.deshacer());
+  $("#dis-rehacer").addEventListener("click", () => edicion.rehacer());
+
+  $("#dis-vistas").addEventListener("click", (evento) => {
+    const boton = evento.target.closest("button[data-vista3d]");
+    if (!boton) return;
+    verDesde(boton.dataset.vista3d);
+    document
+      .querySelectorAll("#dis-vistas button")
+      .forEach((b) => b.classList.toggle("activa", b === boton));
+  });
+
+  $("#dis-capa").addEventListener("input", (evento) => {
+    const maximo = Number(evento.target.max);
+    const valor = Number(evento.target.value);
+    // Con el mando arriba del todo se ve el modelo entero, que es lo normal.
+    estado.capaMaxima = valor >= maximo && !estado.aislarCapa ? null : valor;
+    $("#dis-capa-texto").textContent = textoDeCapa();
+    dibujarModelo();
+  });
+
+  $("#dis-aislar").addEventListener("change", (evento) => {
+    estado.aislarCapa = evento.target.checked;
+    // Aislar sin haber elegido capa no dice nada: se toma la del mando.
+    if (estado.aislarCapa && estado.capaMaxima === null) {
+      estado.capaMaxima = Number($("#dis-capa").value);
+    }
+    $("#dis-capa-texto").textContent = textoDeCapa();
+    dibujarModelo();
   });
 
   $("#dis-modo").addEventListener("click", (evento) => {
@@ -1138,10 +1513,11 @@ function conectarInterfaz() {
     // Cada pieza empieza sin ajuste manual de altura.
     estado.desnivel = 0;
     estado.previsualizacion = null;
-    estado.seleccion = null;
-    resaltarSeleccion();
+    // Elegir una pieza es para ponerla; sólo el bote de pintura la usa de otra
+    // manera, y ahí lo que interesa es su color.
+    if (estado.piezaEnMano && estado.herramienta !== "pintar") cambiarHerramienta("colocar");
     pintarPaleta();
-    pintarSeleccion();
+    edicion.pintarPanel();
     if (!estado.piezaEnMano) grupoFantasma.clear();
     solicitarRender();
   });
@@ -1152,6 +1528,11 @@ function conectarInterfaz() {
   });
 
   $("#dis-pasos").addEventListener("click", (evento) => {
+    const boton = evento.target.closest("[data-piezas-de]");
+    if (boton) {
+      evento.stopPropagation();
+      return edicion.seleccionarPaso(Number(boton.dataset.piezasDe));
+    }
     const item = evento.target.closest("[data-paso]");
     if (!item) return;
     estado.pasoActivo = Number(item.dataset.paso);
@@ -1209,7 +1590,21 @@ function conectarInterfaz() {
 async function abrir(montajeId = null, modo = null) {
   if (!estado.iniciado) {
     iniciarEscena();
+    // El editor no importa a este módulo: recibe lo que necesita de la escena
+    // y del estado, y así no hay dependencias cruzadas entre los dos.
+    edicion.iniciar({
+      estado,
+      api,
+      avisar,
+      esc,
+      huella,
+      recargar,
+      resaltarSeleccion,
+      piezasVisibles,
+      soltarPieza,
+    });
     conectarInterfaz();
+    cambiarHerramienta(estado.herramienta);
     estado.iniciado = true;
   }
   const montajes = await cargarMontajes();

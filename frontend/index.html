@@ -107,10 +107,33 @@
           <button data-modo="disenar" class="activa">Diseñar</button>
           <button data-modo="instrucciones">Instrucciones</button>
         </div>
+
         <span class="separador"></span>
-        <button id="dis-rotar" class="pequeno" title="Girar la pieza en mano (R)">⟳ Girar <span id="dis-rotacion">0°</span></button>
+        <div class="conmutador herramientas" id="dis-herramientas">
+          <button data-herramienta="seleccionar" title="Seleccionar y mover piezas (tecla 1)">⬚ Seleccionar</button>
+          <button data-herramienta="colocar" class="activa" title="Colocar la pieza en mano (tecla 2)">✚ Colocar</button>
+          <button data-herramienta="pintar" title="Pintar del color elegido (tecla 3)">◑ Pintar</button>
+          <button data-herramienta="borrar" title="Quitar piezas de una en una (tecla 4)">⌫ Borrar</button>
+          <button data-herramienta="cuentagotas" title="Coger en mano la pieza señalada (tecla 5)">⊙ Copiar</button>
+        </div>
+
+        <span class="separador"></span>
+        <button id="dis-deshacer" class="pequeno" title="Deshacer (Ctrl+Z)" disabled>↶</button>
+        <button id="dis-rehacer" class="pequeno" title="Rehacer (Ctrl+Y)" disabled>↷</button>
+
+        <span class="separador"></span>
+        <button id="dis-rotar" class="pequeno" title="Girar la pieza en mano o la selección (R)">⟳ Girar <span id="dis-rotacion">0°</span></button>
         <button id="dis-soltar" class="pequeno" title="Soltar la pieza en mano (Esc)">Soltar pieza</button>
-        <button id="dis-borrar" class="pequeno peligro" title="Quitar la pieza seleccionada (Supr)">Quitar selección</button>
+        <button id="dis-borrar" class="pequeno peligro" title="Quitar lo seleccionado (Supr)">Quitar selección</button>
+
+        <span class="separador"></span>
+        <label class="check" title="Oculta lo que esté por encima de esa altura: así se llega al interior del modelo">
+          Capas
+          <input id="dis-capa" type="range" min="0" max="0" value="0" />
+          <span id="dis-capa-texto" class="pista">todas</span>
+        </label>
+        <label class="check" title="Ver sólo la capa elegida"><input type="checkbox" id="dis-aislar" /> aislar</label>
+
         <span class="separador"></span>
         <label class="check" title="Tamaño de la placa base, en studs">
           Placa
@@ -118,7 +141,12 @@
           ×
           <input id="dis-placa-d" type="number" min="8" max="96" step="8" value="32" />
         </label>
-        <button id="dis-recentrar" class="pequeno">Recentrar vista</button>
+        <div class="conmutador" id="dis-vistas" title="Punto de vista">
+          <button data-vista3d="iso" class="activa">Iso</button>
+          <button data-vista3d="alzado">Alzado</button>
+          <button data-vista3d="planta">Planta</button>
+        </div>
+        <button id="dis-recentrar" class="pequeno">Recentrar</button>
         <span class="crecer"></span>
         <span class="pista" id="dis-estado"></span>
       </div>
@@ -133,16 +161,15 @@
 
         <div class="lienzo-envoltorio">
           <canvas id="dis-lienzo"></canvas>
-          <div class="ayuda-teclas">
-            Arrastrar con el botón derecho: girar la vista · Rueda: zoom ·
-            Mayús + arrastrar: desplazar · <kbd>R</kbd> girar pieza · <kbd>+</kbd>/<kbd>−</kbd> subir o bajar ·
-            <kbd>Supr</kbd> quitar · <kbd>Esc</kbd> soltar
-          </div>
+          <div id="dis-marco-seleccion" class="marco-seleccion oculto"></div>
+          <div class="ayuda-teclas" id="dis-ayuda"></div>
           <div id="dis-cargando" class="capa-cargando oculto">Cargando modelo…</div>
         </div>
 
         <aside class="panel columna-pasos">
           <div id="dis-panel-disenar">
+            <div id="dis-seleccion" class="seleccion vacio">Ninguna pieza seleccionada.</div>
+
             <h2>Pasos del montaje</h2>
             <p class="pista">Las piezas que coloques entran en el paso activo. Así se generan las instrucciones.</p>
             <div id="dis-pasos" class="lista-pasos"></div>
@@ -150,7 +177,6 @@
               <input id="dis-paso-titulo" placeholder="Título del paso nuevo" />
               <button id="dis-nuevo-paso" class="primario pequeno">Añadir</button>
             </div>
-            <div id="dis-seleccion" class="seleccion vacio">Ninguna pieza seleccionada.</div>
           </div>
 
           <div id="dis-panel-instrucciones" class="oculto">

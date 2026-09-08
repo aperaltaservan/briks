@@ -23,7 +23,9 @@ from app.services import (  # noqa: E402
     builds,
     catalog,
     designer,
+    editor,
     geometry,
+    historial,
     importers,
     inventory,
     ldraw,
@@ -405,6 +407,135 @@ def main() -> int:
             r2["detalle"][0]["y"] == 1,
             f"con la parte maciza encima de la placa sube a 1 ({r2['detalle'][0]['y']})",
         )
+        builds.delete_build(s, b["id"])
+
+    print("\n[9e] Editor: rectificar lo ya construido")
+    with session_scope() as s:
+        # Piezas de sobra para no depender de lo que hayan dejado las pruebas
+        # anteriores, y el mismo molde en otro color para poder repintar.
+        inventory.add_stock(s, "302126", 10)
+        rojo = catalog.get_or_create_color(s, "Bright Red", "#d01012")
+        catalog.get_or_create_element(s, "302121", "3021", rojo.id)
+        inventory.add_stock(s, "302121", 4)
+
+        b = builds.create_build(s, "Editable")
+        r = designer.colocar_piezas(
+            s,
+            b["id"],
+            [{"element_id": "302126", "x": 4, "z": 4}, {"element_id": "302126", "x": 4, "z": 7}],
+            titulo_paso="Suelo",
+        )
+        ids = r["ids"]
+
+        editor.mover(s, b["id"], ids, dx=2)
+        piezas = {p["id"]: p for p in designer.modelo(s, b["id"])["piezas"]}
+        comprobar(
+            all(piezas[i]["x"] == 6 for i in ids),
+            "el grupo se mueve entero sin chocar consigo mismo",
+        )
+        try:
+            editor.mover(s, b["id"], ids, dx=40)
+            comprobar(False, "sacar el grupo de la placa debe fallar")
+        except designer.DesignError:
+            comprobar(True, "un movimiento que se sale de la placa se rechaza")
+        editor.mover(s, b["id"], ids, dx=-2)
+
+        # Dos PLATE 2X3 en (4,4) y (4,7) forman un bloque de 2x6; girarlo lo
+        # deja de 6x2 en la misma esquina.
+        editor.girar(s, b["id"], ids, grados=90)
+        piezas = {p["id"]: p for p in designer.modelo(s, b["id"])["piezas"]}
+        comprobar(
+            {piezas[i]["x"] for i in ids} == {4, 7}
+            and all(piezas[i]["z"] == 4 and piezas[i]["rotacion"] == 90 for i in ids),
+            f"el grupo gira como un bloque ({[(piezas[i]['x'], piezas[i]['z']) for i in ids]})",
+        )
+        editor.girar(s, b["id"], ids, grados=270)  # se deshace a mano el giro
+
+        antes = inventory.availability(s, ["302126"])["302126"]["disponible"]
+        copia = editor.duplicar(s, b["id"], ids, dx=4)
+        comprobar(copia["afectadas"] == 2, "duplicar crea una copia de cada pieza")
+        comprobar(
+            inventory.availability(s, ["302126"])["302126"]["disponible"] == antes - 2,
+            "las copias reservan piezas del inventario",
+        )
+        try:
+            editor.duplicar(s, b["id"], ids, dx=4)
+            comprobar(False, "duplicar sobre las copias debe chocar")
+        except designer.DesignError:
+            comprobar(True, "una copia encima de otra pieza se rechaza")
+
+        # Repintar: mismo molde, otro color. La reserva se mueve con la pieza.
+        editor.sustituir(s, b["id"], [ids[0]], color="rojo")
+        piezas = {p["id"]: p for p in designer.modelo(s, b["id"])["piezas"]}
+        comprobar(piezas[ids[0]]["element_id"] == "302121", "sustituir por color repinta la pieza")
+        comprobar(
+            inventory.availability(s, ["302121"])["302121"]["reservado"] == 1,
+            "la pieza nueva queda reservada",
+        )
+        comprobar(
+            inventory.availability(s, ["302126"])["302126"]["disponible"] == antes - 1,
+            "y la vieja vuelve al fondo común",
+        )
+
+        espejo = editor.reflejar(s, b["id"], ids, eje="x")
+        comprobar(espejo["afectadas"] == 2, "reflejar mueve el grupo al otro lado del espejo")
+
+        seleccion = editor.seleccionar(s, b["id"], color="Bright Red")
+        comprobar(seleccion["total"] == 1 and seleccion["ids"] == [ids[0]], "se busca por color dentro del modelo")
+        comprobar(
+            editor.seleccionar(s, b["id"], y=0)["total"] == 4,
+            "se busca por capa: las cuatro piezas están apoyadas en el suelo",
+        )
+
+        # Mover de paso no toca el modelo, sólo las instrucciones.
+        nuevo_paso = builds.add_step(s, b["id"], "Detalle")["pasos"][-1]
+        reservado_antes = inventory.availability(s, ["302126"])["302126"]["reservado"]
+        editor.cambiar_de_paso(s, b["id"], [ids[1]], paso_id=nuevo_paso["id"])
+        detalle = builds.build_detail(s, b["id"])
+        del_paso = next(p for p in detalle["pasos"] if p["id"] == nuevo_paso["id"])
+        comprobar(del_paso["colocaciones"] == 1, "la pieza cambia de paso")
+        comprobar(
+            inventory.availability(s, ["302126"])["302126"]["reservado"] == reservado_antes,
+            "cambiar de paso no altera lo reservado",
+        )
+
+        print("\n[9f] Deshacer y rehacer")
+        total_antes = designer.modelo(s, b["id"])["total_piezas"]
+        libre_antes = inventory.availability(s, ["302126"])["302126"]["disponible"]
+        editor.quitar(s, b["id"], ids)
+        comprobar(
+            designer.modelo(s, b["id"])["total_piezas"] == total_antes - 2,
+            "quitar en lote retira las dos piezas",
+        )
+        vuelta = historial.deshacer(s, b["id"])
+        comprobar(vuelta["deshecho"], "deshacer encuentra la operación anterior")
+        modelo = designer.modelo(s, b["id"])
+        comprobar(modelo["total_piezas"] == total_antes, "deshacer devuelve las piezas al modelo")
+        comprobar(
+            {p["id"] for p in modelo["piezas"]} >= set(ids),
+            "y conserva los ids de colocación, que son la referencia del chat",
+        )
+        comprobar(
+            inventory.availability(s, ["302126"])["302126"]["disponible"] == libre_antes,
+            "deshacer también restaura las reservas",
+        )
+        rehecho = historial.rehacer(s, b["id"])
+        comprobar(rehecho["rehecho"], "rehacer repite lo deshecho")
+        comprobar(
+            designer.modelo(s, b["id"])["total_piezas"] == total_antes - 2,
+            "y el modelo vuelve a quedarse sin esas piezas",
+        )
+        comprobar(
+            not historial.estado(s, b["id"])["puede_rehacer"],
+            "la pila de rehacer se agota al usarla",
+        )
+        historial.deshacer(s, b["id"])
+        designer.colocar_piezas(s, b["id"], [{"element_id": "302126", "x": 20, "z": 20}])
+        comprobar(
+            not historial.estado(s, b["id"])["puede_rehacer"],
+            "una operación nueva anula lo que quedaba por rehacer",
+        )
+
         builds.delete_build(s, b["id"])
 
     # Va al final a propósito: confirmar duplica el inventario y falsearía

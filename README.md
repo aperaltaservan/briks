@@ -10,7 +10,7 @@ lego/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          FastAPI: API REST + MCP + frontend en un proceso
-│   │   ├── mcp_server.py    Las 36 herramientas MCP
+│   │   ├── mcp_server.py    Las 48 herramientas MCP
 │   │   ├── mcp_stdio.py     Mismo servidor por stdio (chats)
 │   │   ├── models.py        Esquema SQLite
 │   │   ├── routers/api.py   API REST
@@ -23,6 +23,8 @@ lego/
 │   │       ├── geometry.py     del nombre de la pieza a su volumen
 │   │       ├── ldraw.py        geometría real de cada molde (biblioteca LDraw)
 │   │       ├── designer.py     modelo 3D: colocar, mover, instrucciones
+│   │       ├── editor.py       edición en grupo: mover, girar, duplicar…
+│   │       ├── historial.py    deshacer y rehacer sobre el modelo
 │   │       └── recognition.py  inventariado por foto
 │   ├── lego_mcp.py      Lanzador stdio, ejecutable desde cualquier ruta
 │   └── scripts/
@@ -31,7 +33,8 @@ lego/
 │       └── pruebas.py   68 comprobaciones de regresión
 ├── frontend/            Interfaz web
 │   ├── app.js               Inventario, sets, montajes, fotos
-│   ├── designer.js          Diseñador 3D e instrucciones visuales
+│   ├── designer.js          Escena 3D, paleta e instrucciones visuales
+│   ├── edicion.js           Editor: selección, mover, pintar, deshacer
 │   └── vendor/              three.js servido en local (sin CDN)
 ├── seed/                CSV de sets y equivalencias LDraw
 └── data/
@@ -297,16 +300,58 @@ Desde el chat, `instrucciones_montaje` devuelve exactamente lo mismo en datos, y
 `ver_modelo` con `mapa=true` dibuja la planta de cada capa en texto: es la forma
 de comprobar cómo va quedando el modelo sin ver la pantalla.
 
-### Manejo del lienzo
+El chat edita con las mismas herramientas que la web: `buscar_en_modelo`
+devuelve los ids de lo que cumpla un criterio («las placas rojas de la capa 3»)
+y con esos ids trabajan `mover_piezas`, `girar_piezas`, `reflejar_piezas`,
+`duplicar_piezas`, `sustituir_piezas` y `quitar_piezas`. Como todo pasa por el
+mismo servicio, deshacer desde la web revierte lo que hizo el chat, y al
+revés.
+
+### Editar lo ya construido
+
+Colocar piezas es la mitad del trabajo; la otra mitad es rectificar. El
+diseñador tiene cinco herramientas, y el clic hace lo que diga la que esté
+activa:
+
+| Herramienta | Qué hace el clic | Tecla |
+|---|---|---|
+| **Seleccionar** | elegir piezas, arrastrarlas y encuadrar varias | <kbd>1</kbd> |
+| **Colocar** | poner la pieza que tengas en mano | <kbd>2</kbd> |
+| **Pintar** | repintar esa pieza del color de la que tengas elegida en la paleta | <kbd>3</kbd> |
+| **Borrar** | quitar esa pieza (vuelve al inventario) | <kbd>4</kbd> |
+| **Copiar** | coger en mano la pieza señalada, para repetirla | <kbd>5</kbd> |
+
+La selección es de varias piezas: <kbd>Ctrl</kbd>+clic suma o resta,
+arrastrar sobre el vacío encuadra todo lo que abarque el rectángulo, y hay
+atajos para «todas las iguales», «todo el modelo» y «las piezas de este paso».
+Con algo seleccionado, el panel de la derecha permite moverlo, girarlo,
+reflejarlo, duplicarlo, apoyarlo sobre lo que haya debajo, repintarlo con las
+muestras de los colores que tengas de ese molde, llevarlo a otro paso o
+quitarlo. Con una sola pieza, además, se escriben sus coordenadas a mano.
+
+**Un grupo se mueve rígido**: las piezas que viajan juntas no chocan entre sí,
+sólo contra el resto del modelo, y lo que no cabe se rechaza diciendo con qué
+choca. Arrastrando, el fantasma se pone rojo antes de soltar.
+
+**Todo se puede deshacer** (<kbd>Ctrl</kbd>+<kbd>Z</kbd>), incluido lo que haya
+hecho el chat: antes de cada operación se guarda una foto del modelo con sus
+piezas, sus reservas y su placa. Las últimas 30 quedan disponibles, y `deshacer`
+funciona igual desde la web que desde una conversación.
 
 | Acción | Cómo |
 |---|---|
 | Colocar | elegir pieza en la paleta y hacer clic en la placa |
 | Apoyar entera | la pieza se corre hasta una casilla para no quedar a caballo |
-| Girar la pieza | botón «Girar» o tecla <kbd>R</kbd> |
-| Subir o bajar la pieza | <kbd>+</kbd> / <kbd>−</kbd> (o Re Pág / Av Pág) |
-| Soltar la pieza | <kbd>Esc</kbd> |
-| Seleccionar/quitar | clic en una pieza colocada y <kbd>Supr</kbd> |
+| Girar la pieza o la selección | botón «Girar» o tecla <kbd>R</kbd> |
+| Subir o bajar | <kbd>+</kbd> / <kbd>−</kbd> (o Re Pág / Av Pág) |
+| Mover la selección | <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> (según hacia dónde mires) |
+| Soltar la pieza / la selección | <kbd>Esc</kbd> |
+| Quitar lo seleccionado | <kbd>Supr</kbd> |
+| Deshacer / rehacer | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> |
+| Copiar y pegar | <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd> (pega al lado, si hay hueco) |
+| Duplicar / seleccionar todo | <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>Ctrl</kbd>+<kbd>A</kbd> |
+| Ver el interior | el mando «Capas» baja el techo; «aislar» deja sólo esa capa |
+| Punto de vista | Iso / Alzado / Planta |
 | Girar la vista | arrastrar con el botón derecho |
 | Zoom / desplazar | rueda / <kbd>Mayús</kbd> + arrastrar |
 
@@ -326,6 +371,8 @@ licencia CCAL 2.0). Una vez convertidos, el diseñador funciona sin red.
 | Foto | `registrar_piezas_detectadas`, `ver_reconocimiento`, `resolver_reconocimiento`, `confirmar_reconocimiento`, `listar_reconocimientos`, `descartar_reconocimiento` |
 | Montajes | `crear_montaje`, `anadir_paso`, `editar_paso`, `ver_montaje`, `listar_montajes`, `marcar_paso`, `eliminar_paso`, `cambiar_estado_montaje`, `eliminar_montaje`, `comprobar_montaje`, `que_puedo_montar` |
 | Diseñador 3D | `colocar_piezas`, `mover_pieza`, `quitar_pieza`, `vaciar_modelo`, `ver_modelo`, `instrucciones_montaje`, `paleta_de_piezas`, `configurar_placa` |
+| Editor | `buscar_en_modelo`, `mover_piezas`, `girar_piezas`, `reflejar_piezas`, `duplicar_piezas`, `sustituir_piezas`, `colores_de_pieza`, `mover_piezas_de_paso`, `quitar_piezas` |
+| Deshacer | `deshacer`, `rehacer`, `historial_diseno` |
 
 Los errores de negocio se devuelven como datos (`{"ok": false, "error": …}`), y
 cuando hay ambigüedad incluyen `candidatos`, para que el chat pueda reaccionar

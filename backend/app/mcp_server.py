@@ -15,7 +15,16 @@ from mcp.server.mcpserver import MCPServer
 
 from .db import session_scope
 from .models import Element
-from .services import builds, catalog, designer, importers, inventory, recognition
+from .services import (
+    builds,
+    catalog,
+    designer,
+    editor,
+    historial,
+    importers,
+    inventory,
+    recognition,
+)
 from .services.builds import BuildError, PartResolutionError
 from .services.designer import DesignError
 from .services.inventory import InventoryError
@@ -42,6 +51,14 @@ paso, que es lo que convierte el montaje en instrucciones visuales. Para
 construir usa colocar_piezas; sin 'y' la pieza se apoya sola sobre lo que haya
 debajo. ver_modelo con mapa=true devuelve la planta de cada capa en texto: es
 la forma de comprobar lo que llevas hecho sin ver la pantalla.
+
+Lo ya construido se rectifica en grupo, que es como se diseña de verdad:
+buscar_en_modelo devuelve los ids de las piezas que cumplen un criterio ("las
+placas rojas de la capa 3") y con esos ids trabajan mover_piezas, girar_piezas,
+reflejar_piezas, duplicar_piezas, sustituir_piezas (cambiar la pieza entera o
+sólo el color), mover_piezas_de_paso y quitar_piezas. Todas comprueban que lo
+nuevo cabe y que hay piezas libres, y guardan una foto antes: si algo sale como
+no esperabas, deshacer devuelve el modelo al estado anterior.
 
 Para inventariar desde una FOTO: mira tú la imagen, describe cada pieza con su
 cantidad y color, y llama a registrar_piezas_detectadas. Lo que quede como
@@ -792,5 +809,266 @@ def configurar_placa(montaje_id: int, ancho: int = 32, fondo: int = 32) -> dict[
     try:
         with session_scope() as s:
             return {"ok": True, **designer.configurar_placa(s, montaje_id, ancho, fondo)}
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+# ==========================================================================
+# Editor: rectificar lo ya construido
+# ==========================================================================
+@mcp.tool(
+    description=(
+        "Busca piezas dentro del modelo y devuelve sus ids de colocación, que "
+        "son los que piden las demás herramientas del editor. Se filtra por "
+        "element_id, design_id, color, texto de la pieza, paso o capa (y = "
+        "altura en placas). Sin filtros devuelve el modelo entero."
+    )
+)
+def buscar_en_modelo(
+    montaje_id: int,
+    element_id: str = "",
+    design_id: str = "",
+    color: str = "",
+    pieza: str = "",
+    paso_id: int = 0,
+    y: int | None = None,
+) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {
+                "ok": True,
+                **editor.seleccionar(
+                    s,
+                    montaje_id,
+                    element_id=element_id or None,
+                    design_id=design_id or None,
+                    color=color or None,
+                    pieza=pieza or None,
+                    paso_id=paso_id or None,
+                    y=y,
+                ),
+            }
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Desplaza varias piezas a la vez conservando sus posiciones relativas: "
+        "'esta pared una casilla a la derecha'. dx y dz van en studs, dy en "
+        "placas. Con apoyar=true el grupo cae sobre lo que haya debajo en vez "
+        "de subir o bajar una altura fija. Los ids salen de buscar_en_modelo o "
+        "de ver_modelo."
+    )
+)
+def mover_piezas(
+    montaje_id: int,
+    ids: list[int],
+    dx: int = 0,
+    dy: int = 0,
+    dz: int = 0,
+    apoyar: bool = False,
+) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {
+                "ok": True,
+                **editor.mover(s, montaje_id, ids, dx=dx, dy=dy, dz=dz, apoyar=apoyar),
+            }
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Gira un grupo de piezas sobre sí mismo, en múltiplos de 90 grados. El "
+        "conjunto rota como un bloque: cada pieza cambia de sitio y de "
+        "orientación, igual que si giraras ese trozo del modelo con la mano."
+    )
+)
+def girar_piezas(montaje_id: int, ids: list[int], grados: int = 90) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {"ok": True, **editor.girar(s, montaje_id, ids, grados=grados)}
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Refleja un grupo de piezas como en un espejo, sobre el eje 'x' o el "
+        "'z'. Es la forma de construir la mitad simétrica de un modelo. Avisa "
+        "de las piezas sin simetría propia (cuñas, curvas), que en la realidad "
+        "necesitarían su pieza espejo."
+    )
+)
+def reflejar_piezas(montaje_id: int, ids: list[int], eje: str = "x") -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {"ok": True, **editor.reflejar(s, montaje_id, ids, eje=eje)}
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Repite un grupo de piezas desplazado (dx y dz en studs, dy en "
+        "placas). Las copias gastan piezas del inventario, así que se "
+        "comprueba que las hay. Con titulo_paso las copias entran en un paso "
+        "nuevo; si no, en el que se indique o en el último."
+    )
+)
+def duplicar_piezas(
+    montaje_id: int,
+    ids: list[int],
+    dx: int = 0,
+    dy: int = 0,
+    dz: int = 0,
+    paso_id: int = 0,
+    titulo_paso: str = "",
+    permitir_faltantes: bool = False,
+) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {
+                "ok": True,
+                **editor.duplicar(
+                    s,
+                    montaje_id,
+                    ids,
+                    dx=dx,
+                    dy=dy,
+                    dz=dz,
+                    paso_id=paso_id or None,
+                    titulo_paso=titulo_paso or None,
+                    permitir_faltantes=permitir_faltantes,
+                ),
+            }
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Cambia la pieza de unas colocaciones sin moverlas de sitio: con "
+        "element_id (molde y color exactos), con descripcion ('ladrillo 2x4') "
+        "o sólo con color, que conserva el molde de cada una y la repinta. "
+        "Comprueba que el molde nuevo cabe y que tienes unidades libres."
+    )
+)
+def sustituir_piezas(
+    montaje_id: int,
+    ids: list[int],
+    element_id: str = "",
+    color: str = "",
+    descripcion: str = "",
+    permitir_faltantes: bool = False,
+) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {
+                "ok": True,
+                **editor.sustituir(
+                    s,
+                    montaje_id,
+                    ids,
+                    element_id=element_id or None,
+                    color=color or None,
+                    descripcion=descripcion or None,
+                    permitir_faltantes=permitir_faltantes,
+                ),
+            }
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "En qué colores tienes ese mismo molde, con cuántas unidades libres de "
+        "cada uno. Es lo que conviene mirar antes de repintar piezas con "
+        "sustituir_piezas."
+    )
+)
+def colores_de_pieza(element_id: str, solo_disponibles: bool = True) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {
+                "ok": True,
+                **editor.colores_de_pieza(s, element_id, solo_disponibles=solo_disponibles),
+            }
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Lleva unas piezas ya colocadas a otro paso del montaje. No mueve nada "
+        "en el modelo: reorganiza las instrucciones, que es lo que hace falta "
+        "cuando un manual queda desordenado."
+    )
+)
+def mover_piezas_de_paso(
+    montaje_id: int, ids: list[int], paso_id: int = 0, titulo_paso: str = ""
+) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {
+                "ok": True,
+                **editor.cambiar_de_paso(
+                    s, montaje_id, ids, paso_id=paso_id or None, titulo_paso=titulo_paso or None
+                ),
+            }
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Quita varias piezas del modelo de una vez. Todas vuelven al "
+        "inventario disponible. Para una sola pieza vale igual quitar_pieza."
+    )
+)
+def quitar_piezas(montaje_id: int, ids: list[int]) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {"ok": True, **editor.quitar(s, montaje_id, ids)}
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Deshace la última operación sobre el modelo 3D de un montaje, la "
+        "hayas hecho tú o se haya hecho desde la web: deja las piezas, las "
+        "reservas y la placa como estaban antes."
+    )
+)
+def deshacer(montaje_id: int) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {"ok": True, **historial.deshacer(s, montaje_id)}
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(description="Repite la última operación deshecha en el modelo 3D de un montaje.")
+def rehacer(montaje_id: int) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {"ok": True, **historial.rehacer(s, montaje_id)}
+    except ERRORES_NEGOCIO as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    description=(
+        "Las últimas operaciones que se pueden deshacer en el modelo de un "
+        "montaje, de la más reciente a la más antigua."
+    )
+)
+def historial_diseno(montaje_id: int, limite: int = 20) -> dict[str, Any]:
+    try:
+        with session_scope() as s:
+            return {"ok": True, **historial.lista(s, montaje_id, limite)}
     except ERRORES_NEGOCIO as exc:
         return _error(exc)
